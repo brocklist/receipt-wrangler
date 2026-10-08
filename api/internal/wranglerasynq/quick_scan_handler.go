@@ -10,6 +10,7 @@ import (
 )
 
 type QuickScanTaskPayload struct {
+	models.RecognitionTaskPayload
 	Token            *structs.Claims
 	PaidByUserId     uint
 	GroupId          uint
@@ -32,6 +33,10 @@ func HandleQuickScanTask(context context.Context, task *asynq.Task) error {
 	err = json.Unmarshal(task.Payload(), &payload)
 	if err != nil {
 		return HandleError(err)
+	}
+	if payload.RecognitionTaskId > 0 {
+		retried, _ := asynq.GetRetryCount(context)
+		return services.NewRecognitionTaskService().Process(context, payload.RecognitionTaskId, payload.Generation, retried+payload.AttemptOffset)
 	}
 
 	receiptService := services.NewReceiptService(nil)

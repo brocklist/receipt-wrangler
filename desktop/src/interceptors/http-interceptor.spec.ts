@@ -1,4 +1,4 @@
-import { HttpClient, provideHttpClient, withInterceptors } from "@angular/common/http";
+import { HttpClient, HttpContext, provideHttpClient, withInterceptors } from "@angular/common/http";
 import { HttpTestingController, provideHttpClientTesting } from "@angular/common/http/testing";
 import { TestBed } from "@angular/core/testing";
 import { MatSnackBarModule } from "@angular/material/snack-bar";
@@ -7,6 +7,7 @@ import { Store } from "@ngxs/store";
 import { ApiModule } from "../open-api";
 import { SnackbarService } from "../services";
 import { httpInterceptor } from "./http-interceptor";
+import { HANDLE_ERROR_LOCALLY } from "./local-error.context";
 
 const FORBIDDEN_MESSAGE = "You do not have permission to perform this action.";
 
@@ -44,6 +45,14 @@ describe("httpInterceptor", () => {
 
   it("should be created", () => {
     expect(httpInterceptor).toBeTruthy();
+  });
+
+  it("lets task polling handle a server error without repeated global toasts", () => {
+    const error = jest.fn();
+    httpClient.get("/test", { context: new HttpContext().set(HANDLE_ERROR_LOCALLY, true) }).subscribe({ error });
+    httpTestingController.expectOne("/test").flush({ errorMsg: "private provider detail" }, { status: 500, statusText: "Server Error" });
+    expect(error).toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it("should allow HTTP requests to pass through", () => {

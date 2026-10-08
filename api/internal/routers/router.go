@@ -49,6 +49,7 @@ func BuildRootRouter() *chi.Mux {
 	// Receipt Router
 	receiptRouter := BuildReceiptRouter()
 	rootRouter.Mount("/api/receipt", receiptRouter)
+	rootRouter.Mount("/api/recognitionTask", BuildRecognitionTaskRouter())
 
 	// Receipt Image Router
 	receiptImageRouter := BuildReceiptImageRouter()

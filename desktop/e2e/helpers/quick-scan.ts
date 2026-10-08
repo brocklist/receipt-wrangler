@@ -1,5 +1,6 @@
 import { openReceiptsOverflowMenu } from './receipts-table';
 import { expect, type Locator, type Page, type Route } from '@playwright/test';
+import type { CreateRecognitionTaskCommand, RecognitionTask } from '../../src/open-api';
 
 // Shared helpers for the Quick Scan dialog e2e specs. The dialog is only
 // reachable behind the `aiPoweredReceipts` feature flag (off in dev/CI) and its
@@ -12,6 +13,61 @@ import { expect, type Locator, type Page, type Route } from '@playwright/test';
 
 /** The fixture image fed into the dialog's file input (read client-side). */
 export const RECEIPT_PNG = 'e2e/fixtures/receipt.png';
+
+/** Mock recognition responses for UI-only submission assertions; this does not prove server persistence. */
+export async function mockQuickScanTasks(page: Page, ownerUserId: number, initialTasks: RecognitionTask[] = []) {
+  const tasks = new Map(initialTasks.map(task => [task.id, task]));
+  const registrations: CreateRecognitionTaskCommand[] = [];
+  const uploads: { id: number; body: Buffer; contentType: string }[] = [];
+  let nextId = Math.max(100000, ...initialTasks.map(task => task.id)) + 1;
+  const active = (task: RecognitionTask) => !['SUCCEEDED', 'FAILED'].includes(task.status);
+  await page.route('**/api/recognitionTask*', async route => {
+    const request = route.request();
+    if (request.method() === 'POST') {
+      const command = request.postDataJSON() as CreateRecognitionTaskCommand;
+      registrations.push(command);
+      const now = new Date().toISOString();
+      const task: RecognitionTask = { id: nextId++, clientRequestId: command.clientRequestId, fileName: command.fileName,
+        fileSize: command.fileSize, groupId: command.groupId, ownerUserId, version: 1, status: 'AWAITING_UPLOAD',
+        stage: 'UPLOAD', createdAt: now, updatedAt: now, uploadedBytes: 0, uploadTotalBytes: command.fileSize,
+        attempt: 0, maxAttempts: 4, fallbackActive: false, errorCode: '', errorMessage: '', canRetry: false, canUpload: true };
+      tasks.set(task.id, task);
+      await route.fulfill({ status: 201, json: task });
+      return;
+    }
+    const params = new URL(request.url()).searchParams;
+    const scoped = [...tasks.values()].filter(task => params.get('scope') === 'all' || task.ownerUserId === ownerUserId);
+    let data = scoped.filter(task => !params.get('clientRequestId') || task.clientRequestId === params.get('clientRequestId'))
+      .filter(task => !params.get('ids') || params.get('ids')!.split(',').includes(String(task.id)))
+      .filter(task => !params.get('groupId') || String(task.groupId) === params.get('groupId'))
+      .filter(task => !params.get('status') || task.status === params.get('status'))
+      .filter(task => params.get('bucket') === 'active' ? active(task) : params.get('bucket') === 'history' ? !active(task) : true);
+    const totalCount = data.length;
+    const size = Number(params.get('pageSize') || 25);
+    const start = (Number(params.get('page') || 1) - 1) * size;
+    data = data.slice(start, start + size);
+    await route.fulfill({ json: { data, totalCount, activeCount: scoped.filter(active).length,
+      awaitingUploadCount: scoped.filter(task => task.status === 'AWAITING_UPLOAD' || task.status === 'UPLOAD_INTERRUPTED').length,
+      runningCount: scoped.filter(task => task.status === 'RUNNING').length,
+      failedCount: scoped.filter(task => task.status === 'FAILED').length } });
+  });
+  await page.route('**/api/recognitionTask/**', async route => {
+    const request = route.request();
+    const match = /\/recognitionTask\/(\d+)\/file/.exec(new URL(request.url()).pathname);
+    const id = Number(match?.[1]);
+    const task = tasks.get(id);
+    if (!task || request.method() !== 'PUT') { await route.abort(); return; }
+    uploads.push({ id, body: request.postDataBuffer()!, contentType: request.headers()['content-type'] ?? '' });
+    const next: RecognitionTask = { ...task, status: 'QUEUED', uploadedBytes: task.fileSize,
+      queuedAt: new Date().toISOString(), version: task.version + 1, canUpload: false };
+    tasks.set(id, next);
+    await route.fulfill({ status: 202, json: next });
+  });
+  return { registrations, uploads, tasks, setTask: (id: number, patch: Partial<RecognitionTask>) => {
+    const task = tasks.get(id)!;
+    tasks.set(id, { ...task, ...patch, version: task.version + 1, updatedAt: new Date().toISOString() });
+  } };
+}
 
 /** A partial `GroupReceiptSettings` quick-scan config to inject onto a group. */
 export interface QuickScanConfig {

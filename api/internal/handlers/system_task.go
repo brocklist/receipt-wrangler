@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"github.com/go-chi/chi/v5"
 	"gorm.io/gorm"
@@ -18,6 +20,7 @@ import (
 	"receipt-wrangler/api/internal/structs"
 	"receipt-wrangler/api/internal/utils"
 	"receipt-wrangler/api/internal/wranglerasynq"
+	"time"
 )
 
 func GetSystemTasks(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +140,7 @@ func GetActivitiesForGroups(w http.ResponseWriter, r *http.Request) {
 				return http.StatusInternalServerError, err
 			}
 
-			err = wranglerasynq.SetActivityFlags(&activities)
+			err = wranglerasynq.SetActivityFlagsForUser(&activities, token.UserId)
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}
@@ -216,6 +219,31 @@ func RerunActivity(w http.ResponseWriter, r *http.Request) {
 			taskInfo, err := inspector.GetTaskInfo(queueName, systemTask.AsynqTaskId)
 			if err != nil {
 				return http.StatusInternalServerError, err
+			}
+
+			var payload models.RecognitionTaskPayload
+			if err = json.Unmarshal(taskInfo.Payload, &payload); err != nil {
+				return http.StatusInternalServerError, err
+			}
+			if payload.RecognitionTaskId > 0 {
+				// The activity gate above runs before Redis. The durable retry then
+				// rechecks field grants and atomically fences repeated/old clicks.
+				service := services.NewRecognitionTaskService()
+				current, err := service.GetVisible(structs.GetClaims(r).UserId, payload.RecognitionTaskId)
+				if err != nil {
+					recognitionError(w, err)
+					return 0, nil
+				}
+				if current.Generation != payload.Generation || systemTask.GroupId == nil || current.GroupId != *systemTask.GroupId || (systemTask.RanByUserId != nil && current.OwnerUserId != *systemTask.RanByUserId) {
+					recognitionError(w, services.ErrRecognitionConflict)
+					return 0, nil
+				}
+				if _, err = service.Retry(structs.GetClaims(r).UserId, current.ID, current.Version); err != nil {
+					recognitionError(w, err)
+					return 0, nil
+				}
+				w.WriteHeader(http.StatusOK)
+				return 0, nil
 			}
 
 			// Inspector.RunTask does not refuse a task by state — it pushes back
@@ -307,7 +335,13 @@ func GetSystemTaskSourceFile(w http.ResponseWriter, r *http.Request) {
 
 			// os.ReadFile, never utils.ReadFile: that one returns (nil, nil) on a
 			// read error, which would serve an empty image as a success.
-			fileBytes, err := os.ReadFile(pathToRead)
+			var fileBytes []byte
+			var err error
+			if sourceFile.IsDataPath {
+				fileBytes, err = utils.ReadDataFile(pathToRead)
+			} else {
+				fileBytes, err = os.ReadFile(pathToRead)
+			}
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}
@@ -376,7 +410,15 @@ func DownloadSystemTaskSourceFile(w http.ResponseWriter, r *http.Request) {
 				"Content-Disposition",
 				mime.FormatMediaType("attachment", map[string]string{"filename": fileName}),
 			)
-			http.ServeFile(w, r, sourceFile.Path)
+			if sourceFile.IsDataPath {
+				fileBytes, err := utils.ReadDataFile(sourceFile.Path)
+				if err != nil {
+					return http.StatusInternalServerError, err
+				}
+				http.ServeContent(w, r, fileName, time.Time{}, bytes.NewReader(fileBytes))
+			} else {
+				http.ServeFile(w, r, sourceFile.Path)
+			}
 
 			// Streaming has begun, so returning an error here would write an error
 			// body over the file.

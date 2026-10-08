@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gopkg.in/gographics/imagick.v3/imagick"
@@ -26,6 +27,22 @@ type ReceiptProcessingService struct {
 	// to the AI prompt are restricted to that user's grants so the model cannot
 	// suggest a category/tag the user is not allowed to see.
 	UserId uint
+	// Set only by tracked Quick Scan. Other processing callers do not report stages.
+	Context        context.Context
+	Progress       func(models.RecognitionTaskStage, bool) error
+	FallbackActive bool
+}
+
+func (service ReceiptProcessingService) reportStage(stage models.RecognitionTaskStage) error {
+	if service.Context != nil {
+		if err := service.Context.Err(); err != nil {
+			return err
+		}
+	}
+	if service.Progress != nil {
+		return service.Progress(stage, service.FallbackActive)
+	}
+	return nil
 }
 
 func NewSystemReceiptProcessingService(tx *gorm.DB, groupId string) (ReceiptProcessingService, error) {
@@ -142,7 +159,11 @@ func (service ReceiptProcessingService) readReceipt(
 		metadata.DidReceiptProcessingSettingsSucceed = false
 		metadata.RawResponse = err.Error()
 
+		if service.Context != nil && service.Context.Err() != nil {
+			return receipt, metadata, service.Context.Err()
+		}
 		if service.FallbackReceiptProcessingSettings.ID > 0 {
+			service.FallbackActive = true
 			fallbackResult, fallbackErr := service.processImages(
 				imagePaths,
 				emailBody,
@@ -201,6 +222,9 @@ func (service ReceiptProcessingService) processImages(
 	ocrText := ""
 	encodedImages := []string{}
 	hasImage := len(imagePaths) > 0
+	if err := service.reportStage(models.RecognitionPreprocessing); err != nil {
+		return result, err
+	}
 
 	if hasImage {
 		if receiptProcessingSettings.IsVisionModel {
@@ -212,6 +236,9 @@ func (service ReceiptProcessingService) processImages(
 				encodedImages = append(encodedImages, encoded)
 			}
 		} else {
+			if err := service.reportStage(models.RecognitionOCR); err != nil {
+				return result, err
+			}
 			ocrService := NewOcrService(service.TX, receiptProcessingSettings)
 			ocrResults := make([]ocrImageResult, 0, len(imagePaths))
 			for _, imagePath := range imagePaths {
@@ -259,8 +286,12 @@ func (service ReceiptProcessingService) processImages(
 	aiClient := AiService{
 		ReceiptProcessingSettings: receiptProcessingSettings,
 	}
+	if err := service.reportStage(models.RecognitionAI); err != nil {
+		return result, err
+	}
 
 	response, chatCompletionSystemTaskCommand, err := aiClient.CreateChatCompletion(structs.AiChatCompletionOptions{
+		Context:    service.Context,
 		Messages:   aiMessages,
 		DecryptKey: true,
 	})
@@ -271,6 +302,9 @@ func (service ReceiptProcessingService) processImages(
 	}
 
 	cleanedResponse := service.cleanResponse(response)
+	if err := service.reportStage(models.RecognitionParsing); err != nil {
+		return result, err
+	}
 
 	err = json.Unmarshal([]byte(cleanedResponse), &receipt)
 	if err != nil {

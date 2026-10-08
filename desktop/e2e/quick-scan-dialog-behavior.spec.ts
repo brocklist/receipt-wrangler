@@ -1,4 +1,4 @@
-import { expect, type Route, test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { creds, stubTokenRefresh } from './helpers/auth';
 import {
   apiCreateGroup,
@@ -10,7 +10,7 @@ import {
 import {
   injectQuickScanAppData,
   openQuickScanDialog,
-  parseMultipartFields,
+  mockQuickScanTasks,
   selectImageGroup,
   uploadQuickScanImages,
 } from './helpers/quick-scan';
@@ -18,10 +18,10 @@ import {
 // Deeper Quick Scan DIALOG behavior, complementing quick-scan-dialog.spec.ts
 // (which asserts a single static config snapshot). Everything is driven by
 // client-side AppData injection (see helpers/quick-scan.ts) so no server config
-// is mutated. The two SUBMIT specs mock POST /receipt/quickScan: the backend
+// is mutated. SUBMIT specs mock recognition registration and per-file upload: the backend
 // validates each group's PERSISTED config (which we intentionally don't touch),
 // so a real submit would 400 — capturing the request instead lets us assert the
-// exact multipart the client builds (the "falls off the submission" half the
+// exact registration metadata and file multipart the client builds (the "falls off the submission" half the
 // mobile suite can't observe, since its queued receipt has no id).
 
 test.use({ storageState: 'e2e/.auth/admin.json' });
@@ -47,6 +47,7 @@ test.describe('Quick scan dialog behavior', () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('receipt-wrangler-language', 'en-US'));
     await stubTokenRefresh(page);
   });
 
@@ -94,7 +95,7 @@ test.describe('Quick scan dialog behavior', () => {
 
   // Gap #4 — the same preset paid-by "falls off the SUBMISSION": it is sent as
   // the empty sentinel (not the stale admin id), while the shown status is sent.
-  test('a preset paid-by falls off the submission (sent as the empty sentinel)', async ({
+  test('a hidden preset paid-by is omitted from per-file registration', async ({
     page,
   }) => {
     await injectQuickScanAppData(page, {
@@ -119,30 +120,21 @@ test.describe('Quick scan dialog behavior', () => {
       },
     });
 
-    const requests: { body: Buffer | null; contentType: string }[] = [];
-    await page.route('**/api/receipt/quickScan', async (route: Route) => {
-      const req = route.request();
-      requests.push({
-        body: req.postDataBuffer(),
-        contentType: req.headers()['content-type'] ?? '',
-      });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 1);
     await expect(dialog.getByRole('combobox', { name: 'Paid By' })).toHaveCount(0);
 
     await dialog.getByTestId('dialog-submit-button').click();
-    await expect(page.getByText('Successfully queued', { exact: false })).toBeVisible();
-    await expect(dialog).toBeHidden();
-
-    expect(requests).toHaveLength(1);
-    expect(requests[0].body).not.toBeNull();
-    const fields = parseMultipartFields(requests[0].body!, requests[0].contentType);
-    expect(fields.get('groupIds')).toEqual([String(groupA.id)]);
-    expect(fields.get('paidByUserIds')).toEqual(['']); // preset admin discarded
-    expect(fields.get('statuses')).toEqual(['OPEN']); // preset status kept
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].paidByUserId).toBeUndefined();
+    expect(requests.registrations[0].status).toBe('OPEN');
+    expect(requests.uploads).toHaveLength(1);
+    expect(requests.uploads[0].body.toString('latin1')).toContain('filename="receipt.png"');
   });
 
   // Gap #3 — changing an image's group re-runs configureImages and flips which
@@ -189,7 +181,7 @@ test.describe('Quick scan dialog behavior', () => {
   });
 
   // Gap #5 — the positive category path: a required category picked from the
-  // per-group catalog lets the submit through and rides the multipart.
+  // per-group catalog lets the submit through and rides the registration.
   test('a required category selected via the picker lets the submit through', async ({
     page,
   }) => {
@@ -211,15 +203,7 @@ test.describe('Quick scan dialog behavior', () => {
       groupCategories: { [groupA.id]: [category] },
     });
 
-    const requests: { body: Buffer | null; contentType: string }[] = [];
-    await page.route('**/api/receipt/quickScan', async (route: Route) => {
-      const req = route.request();
-      requests.push({
-        body: req.postDataBuffer(),
-        contentType: req.headers()['content-type'] ?? '',
-      });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 1);
@@ -232,14 +216,12 @@ test.describe('Quick scan dialog behavior', () => {
     await page.getByRole('option', { name: category.name, exact: true }).click();
 
     await dialog.getByTestId('dialog-submit-button').click();
-    await expect(page.getByText('Successfully queued', { exact: false })).toBeVisible();
-    await expect(dialog).toBeHidden();
-
-    expect(requests).toHaveLength(1);
-    expect(requests[0].body).not.toBeNull();
-    const fields = parseMultipartFields(requests[0].body!, requests[0].contentType);
-    expect(fields.get('groupIds')).toEqual([String(groupA.id)]);
-    expect(fields.get('categoryIds')).toEqual([String(category.id)]);
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].categoryIds).toEqual([category.id]);
+    expect(requests.uploads).toHaveLength(1);
   });
 
   // Gap #6 — two images on two groups get independent field sets, and one
@@ -274,12 +256,8 @@ test.describe('Quick scan dialog behavior', () => {
       ],
     });
 
-    // The form must block this client-side — fail loudly if a POST escapes.
-    let posted = false;
-    await page.route('**/api/receipt/quickScan', async (route: Route) => {
-      posted = true;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    // The form must block this client-side before registration or upload.
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 2);
@@ -307,11 +285,12 @@ test.describe('Quick scan dialog behavior', () => {
       page.getByText('Please fill in all required fields', { exact: false }),
     ).toBeVisible();
     await expect(dialog).toBeVisible(); // dialog stays open
-    expect(posted).toBe(false);
+    expect(requests.registrations).toHaveLength(0);
+    expect(requests.uploads).toHaveLength(0);
   });
   // The comment field: shown per config AND the caller's group.comments.create,
-  // required blocks the submit, and the typed text rides the multipart.
-  test('a required comment blocks submit until filled, then rides the multipart', async ({
+  // required blocks the submit, and the typed text rides the registration.
+  test('a required comment blocks submit until filled, then rides per-file registration', async ({
     page,
   }) => {
     await injectQuickScanAppData(page, {
@@ -332,15 +311,7 @@ test.describe('Quick scan dialog behavior', () => {
       groupPermissions: { [groupA.id]: ['group.receipts.quick-scan', 'group.comments.create'] },
     });
 
-    const requests: { body: Buffer | null; contentType: string }[] = [];
-    await page.route('**/api/receipt/quickScan', async (route: Route) => {
-      const req = route.request();
-      requests.push({
-        body: req.postDataBuffer(),
-        contentType: req.headers()['content-type'] ?? '',
-      });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 1);
@@ -352,15 +323,17 @@ test.describe('Quick scan dialog behavior', () => {
     // Empty + required → the submit is refused and nothing is sent.
     await dialog.getByTestId('dialog-submit-button').click();
     await expect(page.getByText('Please fill in all required fields', { exact: false })).toBeVisible();
-    expect(requests).toHaveLength(0);
+    expect(requests.registrations).toHaveLength(0);
+    expect(requests.uploads).toHaveLength(0);
 
     await comment.fill('Client dinner, reimbursable');
     await dialog.getByTestId('dialog-submit-button').click();
-    await expect(page.getByText('Successfully queued', { exact: false })).toBeVisible();
-
-    expect(requests).toHaveLength(1);
-    const fields = parseMultipartFields(requests[0].body!, requests[0].contentType);
-    expect(fields.get('comments')).toEqual(['Client dinner, reimbursable']);
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].comment).toBe('Client dinner, reimbursable');
+    expect(requests.uploads).toHaveLength(1);
   });
 
   // Without group.comments.create the field is hidden even when the group enables
@@ -386,15 +359,7 @@ test.describe('Quick scan dialog behavior', () => {
       groupPermissions: { [groupA.id]: ['group.receipts.quick-scan'] },
     });
 
-    const requests: { body: Buffer | null; contentType: string }[] = [];
-    await page.route('**/api/receipt/quickScan', async (route: Route) => {
-      const req = route.request();
-      requests.push({
-        body: req.postDataBuffer(),
-        contentType: req.headers()['content-type'] ?? '',
-      });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 1);
@@ -403,10 +368,12 @@ test.describe('Quick scan dialog behavior', () => {
     await expect(dialog.getByTestId('quick-scan-comment')).toHaveCount(0);
 
     await dialog.getByTestId('dialog-submit-button').click();
-    await expect(page.getByText('Successfully queued', { exact: false })).toBeVisible();
-    expect(requests).toHaveLength(1);
-    const fields = parseMultipartFields(requests[0].body!, requests[0].contentType);
-    expect(fields.get('comments')).toEqual(['']);
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].comment).toBeUndefined();
+    expect(requests.uploads).toHaveLength(1);
   });
 
   // hideComments hides the whole group's comments, so it hides the quick-scan

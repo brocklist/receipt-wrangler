@@ -1,6 +1,6 @@
 import { provideHttpClient, withInterceptorsFromDi } from "@angular/common/http";
 import { provideHttpClientTesting } from "@angular/common/http/testing";
-import { NO_ERRORS_SCHEMA, provideZonelessChangeDetection } from "@angular/core";
+import { NO_ERRORS_SCHEMA, provideZonelessChangeDetection, signal } from "@angular/core";
 import { ComponentFixture, TestBed } from "@angular/core/testing";
 import { MatDialogModule } from "@angular/material/dialog";
 import { MatSnackBarModule } from "@angular/material/snack-bar";
@@ -14,6 +14,7 @@ import { SetAuthState, SetPermissions } from "../../store/auth.state.actions";
 import { SetSelectedGroupId } from "../../store/group.state.actions";
 import { StoreModule } from "../../store/store.module";
 import { HeaderComponent } from "./header.component";
+import { QuickScanTaskService } from "../../receipts/recognition-tasks/quick-scan-task.service";
 
 describe("HeaderComponent", () => {
   let component: HeaderComponent;
@@ -60,7 +61,8 @@ describe("HeaderComponent", () => {
         NgbPopoverModule,
         StoreModule,
     ],
-    providers: [provideZonelessChangeDetection(), provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting()],
+    providers: [provideZonelessChangeDetection(), provideHttpClient(withInterceptorsFromDi()), provideHttpClientTesting(),
+      { provide: QuickScanTaskService, useValue: { ownActiveCount: signal(0) } }],
     schemas: [NO_ERRORS_SCHEMA],
 }).compileComponents();
 
@@ -73,6 +75,14 @@ describe("HeaderComponent", () => {
 
   it("should create", () => {
     expect(component).toBeTruthy();
+  });
+
+  it("shows a task entry and the server-scoped own active count after login", async () => {
+    logIn();
+    (TestBed.inject(QuickScanTaskService).ownActiveCount as any).set(3);
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[data-testid="recognition-tasks-entry"]')).toBeTruthy();
+    expect(component.recognitionTasks.ownActiveCount()).toBe(3);
   });
 
   it("should toggle sidebar", () => {

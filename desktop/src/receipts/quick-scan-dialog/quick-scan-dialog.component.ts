@@ -1,16 +1,18 @@
-import { Component, DestroyRef, OnInit, ViewEncapsulation, inject, viewChild } from "@angular/core";
+import { Component, DestroyRef, OnInit, ViewEncapsulation, computed, inject, signal, viewChild } from "@angular/core";
 import { takeUntilDestroyed } from "@angular/core/rxjs-interop";
 import { FormArray, FormBuilder, FormControl, FormGroup, Validators } from "@angular/forms";
 import { MatDialogRef } from "@angular/material/dialog";
 import { Store } from "@ngxs/store";
-import { take, tap } from "rxjs";
 import { ReceiptFileUploadCommand } from "../../interfaces";
 import { setRequired } from "../../form";
-import { Category, GroupReceiptSettings, Permission, ReceiptService, ReceiptStatus, Tag } from "../../open-api";
+import { Category, GroupReceiptSettings, Permission, ReceiptStatus, Tag } from "../../open-api";
+import { localizeUiTextPair } from "../../i18n/language";
 import { SnackbarService } from "../../services";
 import { AuthState, GroupState } from "../../store";
 import { codePointMaxLengthValidator, trimmedRequiredValidator } from "../../validators";
 import { UploadImageComponent } from "../upload-image/upload-image.component";
+import { QuickScanTaskService } from "../recognition-tasks/quick-scan-task.service";
+import { RecognitionTaskRow } from "../recognition-tasks/quick-scan-task.models";
 import { QuickScanFieldConfig, resolveQuickScanFieldConfig } from "./quick-scan-field-config";
 import { receiptRequirementsFor } from "../../utils/receipt-requirements";
 
@@ -35,6 +37,15 @@ const commentRequiredValidator = trimmedRequiredValidator();
     standalone: false
 })
 export class QuickScanDialogComponent implements OnInit {
+  public readonly text = localizeUiTextPair;
+  public readonly tasks = inject(QuickScanTaskService);
+  public readonly submitted = signal(false);
+  private readonly batchIds = signal<string[]>([]);
+  public readonly batchRows = computed<RecognitionTaskRow[]>(() => this.batchIds().map(id => {
+    const local = this.tasks.state().local[id];
+    const task = local?.taskId ? this.tasks.state().tasks[local.taskId] : undefined;
+    return { id, local, task };
+  }).filter(row => row.local || row.task));
   public readonly uploadImageComponent = viewChild.required(UploadImageComponent);
 
   public form: FormGroup = new FormGroup({});
@@ -56,10 +67,11 @@ export class QuickScanDialogComponent implements OnInit {
   constructor(
     private dialogRef: MatDialogRef<QuickScanDialogComponent>,
     private formBuilder: FormBuilder,
-    private receiptService: ReceiptService,
     private snackbarService: SnackbarService,
     private store: Store
-  ) {}
+  ) {
+    this.destroyRef.onDestroy(() => this.images.forEach(image => this.releasePreview(image)));
+  }
 
   public get paidByUserIds(): FormArray {
     return this.form.get("paidByUserIds") as FormArray;
@@ -107,6 +119,7 @@ export class QuickScanDialogComponent implements OnInit {
   }
 
   public fileLoaded(fileData: ReceiptFileUploadCommand): void {
+    if (this.submitted()) return;
     if (fileData.file && !fileData.encodedImage) {
       fileData.url = URL.createObjectURL(fileData.file);
     }
@@ -268,6 +281,7 @@ export class QuickScanDialogComponent implements OnInit {
   }
 
   public removeImage(index: number): void {
+    this.releasePreview(this.images[index]);
     this.paidByUserIds.removeAt(index);
     this.statuses.removeAt(index);
     this.groupIds.removeAt(index);
@@ -278,27 +292,21 @@ export class QuickScanDialogComponent implements OnInit {
   }
 
   public submitButtonClicked(): void {
+    if (this.submitted()) return;
     if (this.form.valid && this.images.length > 0) {
-      this.receiptService
-        .quickScanReceipt(
-          this.images.map((i) => i.file),
-          this.groupIds.value,
-          this.paidByUserIds.value,
-          this.statuses.value,
-          this.joinIds(this.categories),
-          this.joinIds(this.tags),
-          // Already one string per image - no id joining needed, unlike categories/tags.
-          this.comments.value
-        )
-        .pipe(
-          take(1),
-          tap(() => {
-            const imageWord = this.images.length === 1 ? "image" : "images";
-            this.snackbarService.success(`Successfully queued ${imageWord} for processing`);
-            this.dialogRef.close();
-          }),
-        )
-        .subscribe();
+      const ids = this.tasks.submit(this.images.map((image, index) => ({
+        file: image.file,
+        groupId: Number(this.groupIds.at(index).value),
+        paidByUserId: Number(this.paidByUserIds.at(index).value) || undefined,
+        status: this.statuses.at(index).value || undefined,
+        categoryIds: this.selectedIds(this.categories.at(index).value),
+        tagIds: this.selectedIds(this.tags.at(index).value),
+        comment: this.comments.at(index).value || undefined,
+      })));
+      if (ids.length) {
+        this.batchIds.set(ids);
+        this.submitted.set(true);
+      }
     }
     if (this.images.length === 0) {
       this.snackbarService.error("Please select images to upload");
@@ -308,12 +316,12 @@ export class QuickScanDialogComponent implements OnInit {
     }
   }
 
-  // Serializes each image's selected category/tag objects into a comma-joined id string (one entry
-  // per image), matching the multipart shape the API expects.
-  private joinIds(array: FormArray): string[] {
-    return array.controls.map((control) =>
-      ((control.value ?? []) as { id: number }[]).map((entity) => entity.id).join(",")
-    );
+  private selectedIds(value: { id: number }[] | undefined): number[] {
+    return (value ?? []).map(entity => entity.id);
+  }
+
+  private releasePreview(image: ReceiptFileUploadCommand | undefined): void {
+    if (image?.url?.startsWith("blob:")) URL.revokeObjectURL(image.url);
   }
 
   public cancelButtonClicked(): void {

@@ -1,0 +1,95 @@
+<article class="task-row" [attr.data-testid]="'recognition-task-' + row().id">
+  <div class="task-file">
+    <strong>{{ row().task?.fileName ?? row().local?.fileName }}</strong>
+    <span>{{ (groupId() | group)?.name ?? groupId() }} · {{ bytes(row().task?.fileSize ?? row().local?.fileSize) }}</span>
+    @if (row().task; as task) {
+      <small>{{ text('上传者', 'Uploader') }} {{ (task.ownerUserId.toString() | user)?.displayName ?? task.ownerUserId }}</small>
+      <small>{{ task.createdAt | date:'short' }}</small>
+    }
+  </div>
+  <div class="task-progress" aria-live="polite" aria-atomic="true">
+    <strong [class.task-failed]="row().task?.status === 'FAILED' || row().task?.status === 'UPLOAD_INTERRUPTED'">
+      {{ statusText() }}
+    </strong>
+    @if (uploadVisible()) {
+      <mat-progress-bar [mode]="percent() == null ? 'indeterminate' : 'determinate'" [value]="percent() ?? 0"
+        [attr.aria-label]="text('上传进度', 'Upload progress')"></mat-progress-bar>
+      <small data-testid="recognition-upload-bytes">
+        {{ transferBytes(row().local?.loaded ?? row().task?.uploadedBytes ?? 0) }}
+        @if (percent() != null) { / {{ transferBytes(row().local?.total ?? row().task?.uploadTotalBytes) }} · {{ percent() }}% }
+      </small>
+    } @else if (row().task?.status === 'UPLOAD_INTERRUPTED') {
+      <small data-testid="recognition-upload-bytes">
+        {{ transferBytes(row().task?.uploadedBytes ?? 0) }}
+        @if (percent() != null) { / {{ transferBytes(row().task?.uploadTotalBytes ?? row().task?.fileSize) }} · {{ percent() }}% }
+        · {{ text('服务端已接收；重新选择后从头上传', 'Received by server; reselect to restart from the beginning') }}
+      </small>
+    } @else if (activeRecognition()) {
+      <mat-progress-bar mode="indeterminate" [attr.aria-label]="statusText()"></mat-progress-bar>
+    }
+    @if (row().task; as task) {
+      @if (!uploadVisible() && !['AWAITING_UPLOAD', 'UPLOADING', 'UPLOAD_INTERRUPTED'].includes(task.status) &&
+          task.uploadedBytes >= (task.uploadTotalBytes ?? task.fileSize)) {
+        <small>{{ text('上传已完成', 'Upload complete') }} · {{ bytes(task.fileSize) }}</small>
+      }
+      <div class="task-timing">
+        @if (task.queuedAt) {
+          <span>{{ text('排队', 'Queued for') }} {{ elapsed(task.queuedAt, task.startedAt ?? task.completedAt, tasks.now()) }}</span>
+        }
+      @if (task.status === 'AWAITING_UPLOAD') {
+        <span>{{ text('等待上传', 'Waiting to upload') }} {{ elapsed(task.createdAt, undefined, tasks.now()) }}</span>
+      }
+      @if (task.status === 'UPLOAD_INTERRUPTED' && task.stageStartedAt) {
+        <span>{{ text('已用上传时间', 'Upload time') }} {{ elapsed(task.stageStartedAt, task.completedAt, tasks.now()) }}</span>
+      }
+        @if (task.stageStartedAt && task.status === 'RUNNING') {
+          <span>{{ text('当前阶段', 'Current stage') }} {{ elapsed(task.stageStartedAt, task.completedAt, tasks.now()) }}</span>
+        }
+        @if (task.startedAt) {
+          <span>{{ text('识别用时', 'Recognition time') }} {{ elapsed(task.startedAt, task.completedAt, tasks.now()) }}</span>
+        }
+      </div>
+      @if (task.attempt > 0) {
+        <small>{{ text('尝试', 'Attempt') }} {{ task.attempt }} / {{ task.maxAttempts }}</small>
+      }
+      @if (task.nextRetryAt && task.status === 'RETRY_WAIT') {
+        <small>{{ text('下次重试', 'Next retry') }} {{ task.nextRetryAt | date:'medium' }}</small>
+      }
+      @if (task.fallbackActive) { <small class="task-fallback">{{ text('正在使用备用识别配置', 'Using fallback recognition configuration') }}</small> }
+      @if (task.errorMessage) { <p class="task-error">{{ task.errorMessage }}</p> }
+      @if (task.status === 'UPLOAD_INTERRUPTED' || task.status === 'AWAITING_UPLOAD') {
+        <small>{{ text('请重新选择原文件，完整上传会从头开始。', 'Select the original file again. The complete upload restarts from the beginning.') }}</small>
+      }
+    }
+    @if (row().local?.reselectRequired) {
+      <small>{{ text('服务端确认尚未接收此文件。请选择原文件，系统会使用原任务信息从头上传。', 'The server confirmed this file was not received. Select the original file to restart its full upload with the original task details.') }}</small>
+    }
+    @if (row().local?.error) { <p class="task-error">{{ row().local?.error }}</p> }
+  </div>
+  <div class="task-actions">
+    @if (row().task; as task) {
+      @if (task.receiptId && task.status === 'SUCCEEDED') {
+        <app-button data-testid="recognition-open-receipt" [buttonText]="text('打开收据', 'Open receipt')" icon="receipt_long"
+          [buttonRouterLink]="['/receipts', task.receiptId.toString(), 'view']"></app-button>
+      }
+      @if (task.canRetry) {
+        <app-button data-testid="recognition-retry" [buttonText]="text('重新识别', 'Retry recognition')" icon="refresh"
+          (clicked)="tasks.retry(task)"></app-button>
+      }
+      @if (task.canUpload && !row().local?.sending && !row().local?.registering) {
+        <input #reuploadInput type="file" hidden accept="image/*,application/pdf,image/heic"
+          [attr.data-testid]="'recognition-reupload-input-' + task.id" (change)="chooseFile($event)">
+        <app-button data-testid="recognition-reupload" [buttonText]="text('重新选择文件', 'Select original file')" icon="upload"
+          (clicked)="reuploadInput.click()"></app-button>
+      }
+    } @else if (row().local?.reselectRequired) {
+      <input #localReuploadInput type="file" hidden accept="image/*,application/pdf,image/heic"
+        [attr.data-testid]="'recognition-reselect-input-' + row().id" (change)="chooseFile($event)">
+      <app-button data-testid="recognition-reselect" [buttonText]="text('重新选择文件', 'Select original file')" icon="upload"
+        (clicked)="localReuploadInput.click()"></app-button>
+    } @else if (row().local?.error) {
+      <app-button data-testid="recognition-confirm-submission" [buttonText]="text('确认并重试', 'Confirm and retry')" icon="refresh"
+        (clicked)="tasks.retrySubmission(row().id)"></app-button>
+    }
+  </div>
+</article>

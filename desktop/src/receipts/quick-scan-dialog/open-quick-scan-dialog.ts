@@ -13,5 +13,7 @@ import { QuickScanDialogComponent } from "./quick-scan-dialog.component";
  * never see it and keyboard navigation would skip the entry.
  */
 export function openQuickScanDialog(matDialog: MatDialog): Observable<unknown> {
-  return matDialog.open(QuickScanDialogComponent, DEFAULT_DIALOG_CONFIG).afterClosed();
+  return matDialog.open(QuickScanDialogComponent, {
+    ...DEFAULT_DIALOG_CONFIG, width: "960px", maxWidth: "94vw",
+  }).afterClosed();
 }

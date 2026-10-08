@@ -5,7 +5,7 @@ module.exports = {
     '<rootDir>/node_modules/',
     '<rootDir>/dist/',
     '<rootDir>/src/open-api/',
-    '<rootDir>/e2e/'
+    '[\\\\/]e2e[\\\\/]'
   ],
   // Performance optimizations
   maxWorkers: '50%',

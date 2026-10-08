@@ -73,3 +73,10 @@
   width: 28rem !important;
   max-width: 100%;
 }
+
+@media (max-width: 900px) {
+  .header-container { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  .header-container > .col-auto { width: 100%; }
+  .nav-button { width: 44px; height: 44px; margin: 0 2px; }
+  .receipt-searchbar { width: min(28rem, 62vw) !important; }
+}

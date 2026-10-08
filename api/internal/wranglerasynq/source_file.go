@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/hibiken/asynq"
+	"gorm.io/gorm"
 	"receipt-wrangler/api/internal/logging"
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/repositories"
@@ -38,6 +39,8 @@ type SystemTaskSourceFile struct {
 	FileName string
 	// GroupId is the group the activity belongs to, for the permission gate.
 	GroupId string
+	// IsDataPath selects the safe data-file reader for durable recognition uploads.
+	IsDataPath bool
 }
 
 // taskSourceFiles are the temp files one task's payload refers to.
@@ -47,6 +50,7 @@ type taskSourceFiles struct {
 	Primary string
 	// Preview is the converted copy, when the pipeline made one.
 	Preview string
+	durable bool
 }
 
 // expectsSourceFile reports whether this task should have an upload at all.
@@ -244,10 +248,10 @@ func resolveActivityFlags(
 	}
 
 	return activityFlags{
-		canBeRestarted: rerunnableState(taskInfo.State) && allFilesPresent(files.rerunPaths()),
+		canBeRestarted: rerunnableState(taskInfo.State) && sourceFilesPresent(files),
 		hasSourceFile: offersSourceFile(taskInfo.State) &&
 			files.expectsSourceFile() &&
-			sourcePathUsable(files.Primary),
+			containedSourcePathUsable(files.Primary, files.durable),
 	}, nil
 }
 
@@ -261,7 +265,23 @@ func RerunSourceFilesPresent(taskType models.SystemTaskType, payload []byte) boo
 		return true
 	}
 
-	return allFilesPresent(files.rerunPaths())
+	return sourceFilesPresent(files)
+}
+
+func sourceFilesPresent(files taskSourceFiles) bool {
+	for _, path := range files.rerunPaths() {
+		if !containedSourcePathUsable(path, files.durable) {
+			return false
+		}
+	}
+	return true
+}
+
+func containedSourcePathUsable(path string, durable bool) bool {
+	if durable {
+		return path != "" && utils.AssertWithinDataDir(path) == nil && utils.FileExists(path)
+	}
+	return sourcePathUsable(path)
 }
 
 // sourcePathUsable reports whether a payload path is one this server may serve: inside
@@ -278,16 +298,6 @@ func sourcePathUsable(path string) bool {
 	}
 
 	return utils.FileExists(path)
-}
-
-func allFilesPresent(paths []string) bool {
-	for _, path := range paths {
-		if !sourcePathUsable(path) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // memoizeTaskInfoLookup caches within a single call. A primary and fallback
@@ -323,6 +333,13 @@ func taskSourceFilesFromPayload(taskType models.SystemTaskType, payload []byte) 
 		if err := json.Unmarshal(payload, &parsedPayload); err != nil {
 			return taskSourceFiles{}, err
 		}
+		if parsedPayload.RecognitionTaskId > 0 {
+			record, err := recognitionSourceRecord(parsedPayload.RecognitionTaskPayload)
+			if err != nil {
+				return taskSourceFiles{}, err
+			}
+			return taskSourceFiles{Primary: record.SourcePath, durable: true}, nil
+		}
 
 		return taskSourceFiles{Primary: parsedPayload.TempPath}, nil
 
@@ -341,11 +358,33 @@ func taskSourceFilesFromPayload(taskType models.SystemTaskType, payload []byte) 
 	return taskSourceFiles{}, nil
 }
 
+// Resolve durable paths from the database, never from attacker-adjacent Redis
+// path fields. An old retry generation must not expose a newer source file.
+func recognitionSourceRecord(payload models.RecognitionTaskPayload) (models.RecognitionTask, error) {
+	record, err := repositories.NewRecognitionTaskRepository(nil).Get(payload.RecognitionTaskId)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return record, ErrSourceFileUnavailable
+	}
+	if err != nil {
+		return record, err
+	}
+	if record.Generation != payload.Generation || record.Status == models.RecognitionSucceeded || record.SourcePath == "" {
+		return record, ErrSourceFileUnavailable
+	}
+	if err = utils.AssertWithinDataDir(record.SourcePath); err != nil {
+		return record, err
+	}
+	if !utils.FileExists(record.SourcePath) {
+		return record, ErrSourceFileUnavailable
+	}
+	return record, nil
+}
+
 // ResolveSystemTaskSourceFile locates the upload behind a system task, ready to
 // preview or download.
 //
-// The path comes out of a Redis payload, so it is confined to temp/ before the
-// caller is allowed near it.
+// Legacy payload paths are confined to temp/. Durable recognition payloads carry
+// an identity whose database source is confined to data/, with a generation fence.
 func ResolveSystemTaskSourceFile(systemTask models.SystemTask) (SystemTaskSourceFile, error) {
 	queueName, err := SystemTaskToQueueName(systemTask.Type)
 	if err != nil {
@@ -380,6 +419,17 @@ func ResolveSystemTaskSourceFile(systemTask models.SystemTask) (SystemTaskSource
 	var payload RerunTaskPayload
 	if err := json.Unmarshal(taskInfo.Payload, &payload); err != nil {
 		return SystemTaskSourceFile{}, err
+	}
+	if systemTask.Type == models.QUICK_SCAN && payload.RecognitionTaskId > 0 {
+		record, err := recognitionSourceRecord(payload.RecognitionTaskPayload)
+		if err != nil {
+			return SystemTaskSourceFile{}, err
+		}
+		// The HTTP gate uses the audit row; refuse a payload pointing across it.
+		if systemTask.GroupId == nil || record.GroupId != *systemTask.GroupId || (systemTask.RanByUserId != nil && record.OwnerUserId != *systemTask.RanByUserId) {
+			return SystemTaskSourceFile{}, ErrSourceFileUnavailable
+		}
+		return SystemTaskSourceFile{Path: record.SourcePath, FileName: record.FileName, GroupId: utils.UintToString(record.GroupId), IsDataPath: true}, nil
 	}
 
 	groupId, err := ResolveActivityGroupId(payload)

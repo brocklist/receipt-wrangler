@@ -2,6 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Quick Scan recognition monitoring
+
+`/receipts/recognition-tasks` and the topbar task entry show durable per-file Quick Scan tasks.
+`QuickScanTaskService` owns the files, at most two concurrent XHR uploads, registration recovery and
+status polling at application scope; `QuickScanTaskState` stores their display state. Closing the
+dialog or navigating does not stop uploads. The dialog switches to its current batch after submit.
+Existing paid-by/status/category/tag/comment rules still apply to each file and group.
+
+Upload progress uses real byte events, distinguishing 100%-sent from server acceptance. Interrupted
+uploads show server-received bytes as text and require reselecting the original file for a full
+restart. Recognition shows stages and elapsed time without a percentage or ETA. Polling is serial
+every two seconds, with 2/4/8/15-second transport backoff and immediate online/focus/page-open sync.
+Only unresolved client request IDs are persisted locally. Permissions filter server and local rows;
+network sync failures retain the last status and use an inline reconnect message.
+
 ## Development Commands
 
 ### Core Development

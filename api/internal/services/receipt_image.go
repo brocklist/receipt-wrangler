@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"os"
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/constants"
@@ -105,6 +106,11 @@ func ReadReceiptFromTextOnly(bodyText string, groupId string) (commands.UpsertRe
 }
 
 func MagicFillFromImage(command commands.MagicFillCommand, groupId string, userId uint) (commands.UpsertReceiptCommand, commands.ReceiptProcessingMetadata, error) {
+	return MagicFillFromImageWithProgress(nil, command, groupId, userId, nil)
+}
+
+// The optional hook is used by Quick Scan only; Smart Fill/email keep their API.
+func MagicFillFromImageWithProgress(ctx context.Context, command commands.MagicFillCommand, groupId string, userId uint, progress func(models.RecognitionTaskStage, bool) error) (commands.UpsertReceiptCommand, commands.ReceiptProcessingMetadata, error) {
 	fileRepository := repositories.NewFileRepository(nil)
 	receiptProcessingService, err := NewSystemReceiptProcessingService(nil, groupId)
 	if err != nil {
@@ -113,6 +119,11 @@ func MagicFillFromImage(command commands.MagicFillCommand, groupId string, userI
 	// Restrict the AI prompt's candidate categories/tags to this user's grants
 	// (0 when there is no triggering user, e.g. system processing).
 	receiptProcessingService.UserId = userId
+	receiptProcessingService.Context = ctx
+	receiptProcessingService.Progress = progress
+	if err := receiptProcessingService.reportStage(models.RecognitionPreprocessing); err != nil {
+		return commands.UpsertReceiptCommand{}, commands.ReceiptProcessingMetadata{}, err
+	}
 
 	bytes, err := fileRepository.GetBytesFromImageBytes(command.ImageData)
 	if err != nil {

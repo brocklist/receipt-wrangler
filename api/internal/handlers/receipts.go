@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/constants"
@@ -14,10 +15,9 @@ import (
 	"receipt-wrangler/api/internal/services"
 	"receipt-wrangler/api/internal/structs"
 	"receipt-wrangler/api/internal/utils"
-	"receipt-wrangler/api/internal/wranglerasynq"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/hibiken/asynq"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -405,6 +405,9 @@ func QuickScan(w http.ResponseWriter, r *http.Request) {
 	var quickScanCommand commands.QuickScanCommand
 
 	vErr, err := quickScanCommand.LoadDataFromRequestAndValidate(w, r)
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	if err != nil {
 		logging.LogStd(logging.LOG_LEVEL_ERROR, err.Error())
 		utils.WriteCustomErrorResponse(w, errMsg, http.StatusInternalServerError)
@@ -429,7 +432,6 @@ func QuickScan(w http.ResponseWriter, r *http.Request) {
 				return http.StatusInternalServerError, errors.New("validation error")
 			}
 
-			fileRepository := repositories.NewFileRepository(nil)
 			token := structs.GetClaims(r)
 
 			// No scanned file may land in the synthetic All group (see
@@ -474,41 +476,36 @@ func QuickScan(w http.ResponseWriter, r *http.Request) {
 			}
 
 			for i := 0; i < len(quickScanCommand.Files); i++ {
-				fileBytes := make([]byte, quickScanCommand.FileHeaders[i].Size)
-
-				_, err := quickScanCommand.Files[i].Read(fileBytes)
+				// The legacy request has already been received. Track its accepted
+				// file without inventing transfer progress for old mobile clients.
+				file, err := quickScanCommand.FileHeaders[i].Open()
 				if err != nil {
 					return http.StatusInternalServerError, err
 				}
-
-				tempPath, err := fileRepository.WriteTempFile(fileBytes)
+				fileBytes, err := io.ReadAll(io.LimitReader(file, commands.RecognitionMaxFileSize+1))
+				file.Close()
 				if err != nil {
 					return http.StatusInternalServerError, err
 				}
-
-				payload := wranglerasynq.QuickScanTaskPayload{
-					Token:            token,
-					PaidByUserId:     resolvedFields[i].PaidByUserId,
-					GroupId:          quickScanCommand.GroupIds[i],
-					Status:           resolvedFields[i].Status,
-					CategoryIds:      resolvedFields[i].CategoryIds,
-					TagIds:           resolvedFields[i].TagIds,
-					Comment:          resolvedFields[i].Comment,
-					TempPath:         tempPath,
-					OriginalFileName: quickScanCommand.FileHeaders[i].Filename,
+				command := commands.RegisterRecognitionTaskCommand{ClientRequestId: uuid.NewString(), FileName: quickScanCommand.FileHeaders[i].Filename, FileSize: int64(len(fileBytes)), GroupId: quickScanCommand.GroupIds[i], PaidByUserId: resolvedFields[i].PaidByUserId, Status: resolvedFields[i].Status, CategoryIds: resolvedFields[i].CategoryIds, TagIds: resolvedFields[i].TagIds, Comment: resolvedFields[i].Comment}
+				if validation := command.Validate(); len(validation.Errors) > 0 {
+					structs.WriteValidatorErrorResponse(w, validation, http.StatusBadRequest)
+					return 0, nil
 				}
-
-				payloadBytes, err := json.Marshal(payload)
+				service := services.NewRecognitionTaskService()
+				task, _, err := service.Register(token.UserId, command, command.Fingerprint())
 				if err != nil {
 					return http.StatusInternalServerError, err
 				}
-
-				task := asynq.NewTask(wranglerasynq.QuickScan, payloadBytes)
-
-				_, err = wranglerasynq.EnqueueTask(task, models.QuickScanQueue)
+				task, uploadToken, err := service.ClaimUpload(token.UserId, task.ID, nil)
 				if err != nil {
 					return http.StatusInternalServerError, err
 				}
+				if err = service.AcceptUpload(task, uploadToken, fileBytes, int64(len(fileBytes))); err != nil {
+					service.InterruptUpload(task.ID, uploadToken, "UPLOAD_INTERRUPTED", "The received receipt file could not be accepted.")
+					return http.StatusBadRequest, err
+				}
+				_ = service.Dispatch(task.ID)
 			}
 
 			w.WriteHeader(http.StatusOK)

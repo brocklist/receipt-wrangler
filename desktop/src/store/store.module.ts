@@ -24,6 +24,7 @@ import { SystemSettingsState } from "./system-settings.state";
 import { SystemTaskTableState } from "./system-task-table.state";
 import { TagTableState } from "./tag-table.state";
 import { UserState } from "./user.state";
+import { QuickScanTaskState } from "../receipts/recognition-tasks/quick-scan-task.state";
 
 @NgModule({
   declarations: [],
@@ -41,6 +42,7 @@ import { UserState } from "./user.state";
       GroupTableState,
       LayoutState,
       PromptTableState,
+      QuickScanTaskState,
       ReceiptProcessingSettingsTableState,
       ReceiptProcessingSettingsTaskTableState,
       ReceiptTableState,

@@ -3,14 +3,18 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"mime/multipart"
 	"net/http/httptest"
+	"path/filepath"
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
 	"receipt-wrangler/api/internal/repositories"
 	"receipt-wrangler/api/internal/services"
 	"receipt-wrangler/api/internal/utils"
+	"receipt-wrangler/api/internal/wranglerasynq"
 	"strings"
 	"testing"
 
@@ -256,7 +260,9 @@ func quickScanCommentRequest(t *testing.T, userId uint, groupId uint, comment *s
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	part.Write([]byte("not-a-real-image"))
+	if err = png.Encode(part, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatalf("encode upload fixture: %v", err)
+	}
 
 	writer.WriteField("groupIds", utils.UintToString(groupId))
 	writer.WriteField("paidByUserIds", utils.UintToString(userId))
@@ -275,6 +281,26 @@ func quickScanCommentRequest(t *testing.T, userId uint, groupId uint, comment *s
 	r = r.WithContext(context.WithValue(r.Context(), jwtmiddleware.ContextKey{}, claimsForUser(userId)))
 
 	QuickScan(w, r)
+	var tasks []models.RecognitionTask
+	if err := repositories.GetDB().Where("owner_user_id = ? AND group_id = ?", userId, groupId).Find(&tasks).Error; err != nil {
+		t.Fatalf("load accepted fixture tasks: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, task := range tasks {
+			if task.SourcePath != "" {
+				if err := utils.RemoveAllInDataDir(filepath.Dir(task.SourcePath)); err != nil {
+					t.Errorf("remove recognition source fixture: %v", err)
+				}
+			}
+			if task.AsynqTaskId != "" {
+				if inspector, err := wranglerasynq.GetAsynqInspector(); err == nil {
+					_ = inspector.DeleteTask(string(models.QuickScanQueue), task.AsynqTaskId)
+					inspector.Close()
+				}
+			}
+			repositories.GetDB().Delete(&models.RecognitionTask{}, task.ID)
+		}
+	})
 	return w
 }
 
@@ -295,7 +321,7 @@ func TestQuickScanHandlerRejectsMissingRequiredComment(t *testing.T) {
 
 // The same request from a member without group.comments.create must NOT 400 - the field is hidden
 // for them, so requiring it would lock them out of quick scan entirely. It gets past the config
-// check (failing later on the fake image, which is not what this asserts).
+// check using a valid image, so an unrelated file-validation 400 cannot hide the waiver.
 func TestQuickScanHandlerSkipsRequiredCommentWithoutPermission(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	userId, groupId := seedQuickScanCommenter(t, false, models.GroupReceiptSettings{

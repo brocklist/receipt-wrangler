@@ -21,7 +21,7 @@ describe("openQuickScanDialog", () => {
     expect(matDialog.open).toHaveBeenCalledTimes(1);
     expect(matDialog.open).toHaveBeenCalledWith(
       QuickScanDialogComponent,
-      DEFAULT_DIALOG_CONFIG
+      { ...DEFAULT_DIALOG_CONFIG, width: "960px", maxWidth: "94vw" }
     );
   });
 

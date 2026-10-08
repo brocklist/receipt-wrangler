@@ -1,0 +1,15 @@
+:host { display: block; }
+.task-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(200px, 2fr) auto; gap: 20px; padding: 16px 0; align-items: start; }
+.task-file, .task-progress { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.task-file strong { overflow-wrap: anywhere; }
+.task-file span, small, .task-timing { color: #64748b; font-size: 12px; }
+.task-timing { display: flex; flex-wrap: wrap; gap: 12px; }
+.task-progress mat-progress-bar { margin: 3px 0; max-width: 480px; }
+.task-failed, .task-error { color: #b91c1c; }
+.task-error { margin: 0; overflow-wrap: anywhere; }
+.task-fallback { color: #b45309; }
+.task-actions { display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 720px) {
+  .task-row { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .task-actions { flex-direction: row; flex-wrap: wrap; }
+}

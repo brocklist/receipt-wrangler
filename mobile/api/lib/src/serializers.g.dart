@@ -29,6 +29,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(CheckReceiptProcessingSettingsConnectivityCommand.serializer)
       ..add(Claims.serializer)
       ..add(Comment.serializer)
+      ..add(CreateRecognitionTaskCommand.serializer)
       ..add(CurrencySeparator.serializer)
       ..add(CurrencySymbolPosition.serializer)
       ..add(CustomField.serializer)
@@ -44,6 +45,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(FileDataView.serializer)
       ..add(FilterOperation.serializer)
       ..add(GetNewRefreshToken200Response.serializer)
+      ..add(GetRecognitionTasksResponse.serializer)
       ..add(GetSystemTaskCommand.serializer)
       ..add(Group.serializer)
       ..add(GroupFilter.serializer)
@@ -87,6 +89,9 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(ReceiptSummaryCustomFieldTotal.serializer)
       ..add(ReceiptSummaryPosition.serializer)
       ..add(ReceiptSummaryRow.serializer)
+      ..add(RecognitionTask.serializer)
+      ..add(RecognitionTaskStage.serializer)
+      ..add(RecognitionTaskStatus.serializer)
       ..add(ReportColumn.serializer)
       ..add(ReportColumnAggFuncEnum.serializer)
       ..add(ReportColumnKindEnum.serializer)
@@ -102,6 +107,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(ReportTemplateGrant.serializer)
       ..add(ReportTemplateOption.serializer)
       ..add(ResetPasswordCommand.serializer)
+      ..add(RetryRecognitionTaskCommand.serializer)
       ..add(Role.serializer)
       ..add(SearchResult.serializer)
       ..add(SignUpCommand.serializer)
@@ -277,6 +283,9 @@ Serializers _$serializers = (Serializers().toBuilder()
           const FullType(BuiltList, const [const FullType(ReceiptSummaryRow)]),
           () => ListBuilder<ReceiptSummaryRow>())
       ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(RecognitionTask)]),
+          () => ListBuilder<RecognitionTask>())
+      ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(String)]),
           () => ListBuilder<String>())
       ..addBuilderFactory(
@@ -379,6 +388,12 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(Widget)]),
           () => ListBuilder<Widget>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(int)]),
           () => ListBuilder<int>())

@@ -18,6 +18,7 @@ api/prompt.service.ts
 api/receipt.service.ts
 api/receiptImage.service.ts
 api/receiptProcessingSettings.service.ts
+api/recognitionTask.service.ts
 api/report.service.ts
 api/role.service.ts
 api/search.service.ts
@@ -53,6 +54,7 @@ model/checkEmailConnectivityCommand.ts
 model/checkReceiptProcessingSettingsConnectivityCommand.ts
 model/claims.ts
 model/comment.ts
+model/createRecognitionTaskCommand.ts
 model/currencySeparator.ts
 model/currencySymbolPosition.ts
 model/customField.ts
@@ -68,6 +70,7 @@ model/fileData.ts
 model/fileDataView.ts
 model/filterOperation.ts
 model/getNewRefreshToken200Response.ts
+model/getRecognitionTasksResponse.ts
 model/getSystemTaskCommand.ts
 model/group.ts
 model/groupFilter.ts
@@ -113,6 +116,9 @@ model/receiptSummaryCommand.ts
 model/receiptSummaryCustomFieldTotal.ts
 model/receiptSummaryPosition.ts
 model/receiptSummaryRow.ts
+model/recognitionTask.ts
+model/recognitionTaskStage.ts
+model/recognitionTaskStatus.ts
 model/reportColumn.ts
 model/reportDetail.ts
 model/reportDocument.ts
@@ -123,6 +129,7 @@ model/reportTemplate.ts
 model/reportTemplateGrant.ts
 model/reportTemplateOption.ts
 model/resetPasswordCommand.ts
+model/retryRecognitionTaskCommand.ts
 model/role.ts
 model/searchResult.ts
 model/signUpCommand.ts

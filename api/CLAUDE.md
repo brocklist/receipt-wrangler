@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Receipt Wrangler API is a Go-based backend service for a receipt management and splitting application. It provides OCR-powered receipt scanning, AI-assisted data extraction, email integration, and multi-user support with group management capabilities.
 
+## Quick Scan recognition tasks
+
+Quick Scan uploads can register a durable `RecognitionTask` through `/api/recognitionTask`, then upload
+one file to its `/file` endpoint. The legacy Quick Scan endpoint remains compatible and tracks new
+submissions too. `RecognitionTask` owns upload bytes, stages, attempt/generation fences, automatic
+retry times and receipt results; `SystemTask` continues to provide activity history. The source is
+retained under the data directory for retry and activity recovery, and removed after a successful
+receipt transaction. Stage timing uses server timestamps; the reconciler repairs idle uploads and
+queue/execution failures without invalidating an active upload heartbeat.
+
+Registration and retries enforce current group field grants and comment requirements. A Quick Scan
+comment is private task input and is saved with the receipt, images and success state in the fenced
+transaction. All-user list access does not grant upload or retry access. Update `swagger.yml` and run
+`generate-client.sh` for API changes; desktop and mobile generated clients must not be hand-edited.
+
 ## Development Commands
 
 ### Building and Running

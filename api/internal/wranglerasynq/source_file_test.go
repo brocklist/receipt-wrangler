@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"receipt-wrangler/api/internal/models"
+	"receipt-wrangler/api/internal/repositories"
 	"receipt-wrangler/api/internal/structs"
+	"receipt-wrangler/api/internal/utils"
 )
 
 func TestResolveActivityFlags(t *testing.T) {
@@ -467,5 +470,60 @@ func TestResolveActivityFlags_PathOutsideTempIsNotUsable(t *testing.T) {
 	}
 	if flags.canBeRestarted {
 		t.Error("canBeRestarted = true for a path outside temp/, want false")
+	}
+}
+
+func TestRecognitionActivitySourceFilesUseDurableIdentity(t *testing.T) {
+	t.Cleanup(repositories.TruncateTestDb)
+	root, err := utils.GetDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = utils.EnsureDataDirectory(root); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "recognition-source-test-"+uuid.NewString())
+	if err = utils.EnsureDataDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = utils.RemoveAllInDataDir(dir) })
+	path := filepath.Join(dir, "receipt.source")
+	if err = utils.WriteDataFile(path, []byte("source bytes")); err != nil {
+		t.Fatal(err)
+	}
+	record := models.RecognitionTask{OwnerUserId: 1, GroupId: 1, ClientRequestId: uuid.NewString(), Generation: 1, Status: models.RecognitionFailed, SourcePath: path, FileName: "receipt.jpg"}
+	if err = repositories.GetDB().Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	payload := QuickScanTaskPayload{RecognitionTaskPayload: models.RecognitionTaskPayload{RecognitionTaskId: record.ID, Generation: record.Generation}, TempPath: filepath.Join(t.TempDir(), "must-be-ignored.jpg")}
+	lookup := lookupReturning(t, asynq.TaskStateArchived, payload)
+	flags, err := resolveActivityFlags(lookup, models.QUICK_SCAN, "task-1")
+	if err != nil || !flags.hasSourceFile || !flags.canBeRestarted {
+		t.Fatalf("durable recovery flags: %+v %v", flags, err)
+	}
+	data, _ := json.Marshal(payload)
+	files, err := taskSourceFilesFromPayload(models.QUICK_SCAN, data)
+	if err != nil || !files.durable || files.Primary != path {
+		t.Fatalf("durable source was not resolved from database: %+v %v", files, err)
+	}
+	payload.Generation++
+	flags, err = resolveActivityFlags(lookupReturning(t, asynq.TaskStateArchived, payload), models.QUICK_SCAN, "task-1")
+	if err != nil || flags.hasSourceFile || flags.canBeRestarted {
+		t.Fatalf("old/different generation exposed source: %+v %v", flags, err)
+	}
+	payload.Generation = record.Generation
+	if err = repositories.GetDB().Model(&record).Update("status", models.RecognitionSucceeded).Error; err != nil {
+		t.Fatal(err)
+	}
+	flags, err = resolveActivityFlags(lookup, models.QUICK_SCAN, "task-1")
+	if err != nil || flags.hasSourceFile || flags.canBeRestarted {
+		t.Fatalf("success exposed retained source: %+v %v", flags, err)
+	}
+	if err = repositories.GetDB().Model(&record).Updates(map[string]interface{}{"status": models.RecognitionFailed, "source_path": filepath.Join(t.TempDir(), "outside-data.source")}).Error; err != nil {
+		t.Fatal(err)
+	}
+	flags, err = resolveActivityFlags(lookup, models.QUICK_SCAN, "task-1")
+	if err != nil || flags.hasSourceFile || flags.canBeRestarted {
+		t.Fatalf("escaped durable path was accepted: %+v %v", flags, err)
 	}
 }

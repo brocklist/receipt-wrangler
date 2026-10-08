@@ -2,6 +2,7 @@ import { CommonModule } from "@angular/common";
 import { NgModule } from "@angular/core";
 import { ReactiveFormsModule } from "@angular/forms";
 import { MatButtonModule } from "@angular/material/button";
+import { MatBadgeModule } from "@angular/material/badge";
 import { MatCardModule } from "@angular/material/card";
 import { MatDialogModule } from "@angular/material/dialog";
 import { MatIconModule } from "@angular/material/icon";
@@ -43,6 +44,7 @@ import { SidebarComponent } from "./sidebar/sidebar.component";
     DirectivesModule,
     ImportModule,
     MatButtonModule,
+    MatBadgeModule,
     MatCardModule,
     MatDialogModule,
     MatIconModule,

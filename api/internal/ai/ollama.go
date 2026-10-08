@@ -48,7 +48,7 @@ func (ollama OllamaClient) GetChatCompletion() (structs.ChatCompletionResult, er
 
 	bodyBytesBuffer := bytes.NewBuffer(bodyBytes)
 
-	request, err := http.NewRequest(http.MethodPost, ollama.ReceiptProcessingSettings.Url, bodyBytesBuffer)
+	request, err := http.NewRequestWithContext(ollama.Options.RequestContext(), http.MethodPost, ollama.ReceiptProcessingSettings.Url, bodyBytesBuffer)
 	if err != nil {
 		return result, err
 	}

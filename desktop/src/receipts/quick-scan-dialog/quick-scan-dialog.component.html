@@ -1,4 +1,21 @@
-<app-dialog headerText="Quick Scan" [actionsTemplate]="actionsTemplate">
+<app-dialog [headerText]="text('快速识别', 'Quick Scan')" [actionsTemplate]="actionsTemplate">
+  @if (submitted()) {
+    <section class="quick-scan-batch" data-testid="quick-scan-current-batch">
+      <p>{{ text('本次文件已开始提交。关闭窗口后，上传和识别仍会继续。', 'This batch is being submitted. Uploads and recognition continue after you close this dialog.') }}</p>
+      @if (tasks.state().connectionError) {
+        <p role="status" class="batch-reconnect">{{ text('状态同步中断，正在重连；最后状态已保留。', 'Reconnecting status synchronization; the last known state is retained.') }}</p>
+      }
+      @if (tasks.state().readError) { <p role="alert" class="batch-reconnect">{{ tasks.state().readError }}</p> }
+      @for (row of batchRows(); track row.id) {
+        <app-recognition-task-row [row]="row"></app-recognition-task-row>
+      }
+      <div class="batch-footer">
+        <app-button icon="fact_check" [buttonText]="text('查看全部识别任务', 'View recognition tasks')"
+          [buttonRouterLink]="['/receipts/recognition-tasks']" (clicked)="cancelButtonClicked()"></app-button>
+        <app-button [buttonText]="text('关闭', 'Close')" (clicked)="cancelButtonClicked()"></app-button>
+      </div>
+    </section>
+  } @else {
   <form [formGroup]="form">
     <app-upload-image
       [multiple]="true"
@@ -73,9 +90,11 @@
     (submitClicked)="submitButtonClicked()"
     (cancelClicked)="cancelButtonClicked()"
   ></app-dialog-footer>
+  }
 </app-dialog>
 
 <ng-template #actionsTemplate>
+  @if (!submitted()) {
   <div class="d-flex align-items-center">
     <app-button
       class="me-2"
@@ -111,4 +130,5 @@
     >
     </app-delete-button>
   </div>
+  }
 </ng-template>

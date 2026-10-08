@@ -5,6 +5,7 @@ import { Store } from "@ngxs/store";
 import { catchError, throwError } from "rxjs";
 import { SnackbarService } from "../services";
 import { AuthState } from "../store";
+import { HANDLE_ERROR_LOCALLY } from "./local-error.context";
 
 const FORBIDDEN_MESSAGE = "You do not have permission to perform this action.";
 
@@ -15,6 +16,7 @@ export const httpInterceptor: HttpInterceptorFn = (req, next) => {
 
   return next(req).pipe(
     catchError((e: HttpErrorResponse) => {
+      if (req.context.get(HANDLE_ERROR_LOCALLY)) return throwError(() => e);
       const isLoggedIn = store.selectSnapshot(AuthState.isLoggedIn);
 
       // Don't intercept errors from token refresh requests — let TokenRefreshService handle them
