@@ -18,7 +18,7 @@ export class QuickScanButtonComponent {
   public showQuickScanDialog(): void {
     const ref = this.matDialog.open(
       QuickScanDialogComponent,
-      DEFAULT_DIALOG_CONFIG
+      { ...DEFAULT_DIALOG_CONFIG, width: "960px", maxWidth: "94vw" }
     );
 
     ref

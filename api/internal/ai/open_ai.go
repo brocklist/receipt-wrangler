@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/sashabaranov/go-openai"
-	"golang.org/x/net/context"
 )
 
 type OpenAiClient struct {
@@ -104,7 +103,7 @@ func (openAi OpenAiClient) GetChatCompletion() (structs.ChatCompletionResult, er
 	}
 
 	resp, err := client.CreateChatCompletion(
-		context.Background(),
+		openAi.Options.RequestContext(),
 		request,
 	)
 	if err != nil {

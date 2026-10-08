@@ -151,6 +151,7 @@ func MakeMigrations() error {
 		&models.SystemSettings{},
 		&models.SystemEmail{},
 		&models.SystemTask{},
+		&models.RecognitionTask{},
 		&models.ReceiptProcessingSettings{},
 		&models.Prompt{},
 		&models.ReportTemplate{},

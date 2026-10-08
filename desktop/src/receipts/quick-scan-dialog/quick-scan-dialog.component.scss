@@ -1,5 +1,11 @@
 
 app-quick-scan-dialog {
+  .quick-scan-batch {
+    width: min(860px, 100%);
+    app-recognition-task-row { display: block; border-bottom: 1px solid #e2e8f0; }
+  }
+  .batch-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; padding-top: 16px; }
+  .batch-reconnect { color: #92400e; background: #fffbeb; padding: 12px; border-radius: 8px; }
   .carousel-control {
     display: none;
   }

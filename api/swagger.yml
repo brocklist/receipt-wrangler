@@ -14,6 +14,112 @@ security:
   - bearerAuth: [ ]
   - apiKeyAuth: [ ]
 paths:
+  /recognitionTask:
+    post:
+      tags: [RecognitionTask]
+      operationId: createRecognitionTask
+      summary: Register a Quick Scan file before uploading
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecognitionTaskCommand'
+      responses:
+        '201':
+          description: Registered task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionTask' }
+        '200':
+          description: Existing task for the same immutable request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Request ID conflicts with an existing submission }
+    get:
+      tags: [RecognitionTask]
+      operationId: getRecognitionTasks
+      summary: Get authorized Quick Scan tasks and scoped counts
+      parameters:
+        - { in: query, name: scope, schema: { type: string, enum: [own, all], default: own } }
+        - { in: query, name: bucket, schema: { type: string, enum: [active, history, all], default: all } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 } }
+        - { in: query, name: pageSize, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { in: query, name: clientRequestId, schema: { type: string } }
+        - { in: query, name: ids, description: Comma-separated task IDs (at most 100), schema: { type: string } }
+        - { in: query, name: groupId, schema: { type: integer } }
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/RecognitionTaskStatus' } }
+      responses:
+        '200':
+          description: Task page and visibility-scoped counts independent of page filters
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GetRecognitionTasksResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /recognitionTask/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer } }
+    get:
+      tags: [RecognitionTask]
+      operationId: getRecognitionTask
+      summary: Refresh one authorized task
+      responses:
+        '200':
+          description: Task snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionTask' }
+        '404': { description: Task does not exist or is not visible }
+  /recognitionTask/{id}/file:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer } }
+    put:
+      tags: [RecognitionTask]
+      operationId: uploadRecognitionTaskFile
+      summary: Upload a complete Quick Scan source file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '202':
+          description: Source is durable; dispatch may still be pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Task is already uploading or source differs }
+        '413': { description: File exceeds the 50 MiB limit }
+  /recognitionTask/{id}/retry:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: integer } }
+    post:
+      tags: [RecognitionTask]
+      operationId: retryRecognitionTask
+      summary: Retry a failed task using its retained source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RetryRecognitionTaskCommand' }
+      responses:
+        '202':
+          description: Retry generation accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionTask' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Version is stale or task cannot be retried }
   /dashboard/{groupId}:
     parameters:
       - in: path
@@ -3258,6 +3364,69 @@ components:
           schema:
             $ref: '#/components/schemas/InternalErrorResponse'
   schemas:
+    RecognitionTaskStatus:
+      type: string
+      enum: [AWAITING_UPLOAD, UPLOADING, UPLOAD_INTERRUPTED, DISPATCH_PENDING, QUEUED, RUNNING, RETRY_WAIT, SUCCEEDED, FAILED]
+    RecognitionTaskStage:
+      type: string
+      enum: [UPLOAD, PREPROCESSING, OCR, AI, PARSING, SAVING, DONE]
+    CreateRecognitionTaskCommand:
+      type: object
+      required: [clientRequestId, fileName, fileSize, groupId]
+      properties:
+        clientRequestId: { type: string, format: uuid }
+        fileName: { type: string, maxLength: 255 }
+        fileSize: { type: integer, minimum: 1, maximum: 52428800 }
+        groupId: { type: integer, minimum: 1 }
+        paidByUserId: { type: integer, default: 0 }
+        status: { $ref: '#/components/schemas/ReceiptStatus' }
+        categoryIds: { type: array, items: { type: integer } }
+        tagIds: { type: array, items: { type: integer } }
+    RetryRecognitionTaskCommand:
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1 }
+    GetRecognitionTasksResponse:
+      type: object
+      required: [data, totalCount, activeCount, awaitingUploadCount, runningCount, failedCount]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/RecognitionTask' } }
+        totalCount: { type: integer }
+        activeCount: { type: integer }
+        awaitingUploadCount: { type: integer }
+        runningCount: { type: integer }
+        failedCount: { type: integer }
+    RecognitionTask:
+      type: object
+      required: [id, clientRequestId, fileName, fileSize, groupId, ownerUserId, version, status, stage, createdAt, updatedAt, uploadedBytes, attempt, maxAttempts, fallbackActive, errorCode, errorMessage, canUpload, canRetry]
+      properties:
+        id: { type: integer }
+        clientRequestId: { type: string }
+        fileName: { type: string }
+        fileSize: { type: integer }
+        groupId: { type: integer }
+        ownerUserId: { type: integer }
+        version: { type: integer }
+        status: { $ref: '#/components/schemas/RecognitionTaskStatus' }
+        stage: { $ref: '#/components/schemas/RecognitionTaskStage' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        queuedAt: { type: string, format: date-time, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        stageStartedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        uploadedBytes: { type: integer }
+        uploadTotalBytes: { type: integer, nullable: true }
+        attempt: { type: integer }
+        maxAttempts: { type: integer }
+        nextRetryAt: { type: string, format: date-time, nullable: true }
+        fallbackActive: { type: boolean }
+        receiptId: { type: integer, nullable: true }
+        errorCode: { type: string }
+        errorMessage: { type: string }
+        canUpload: { type: boolean }
+        canRetry: { type: boolean }
     ReceiptStatus:
       description: Status of a receipt
       type: string

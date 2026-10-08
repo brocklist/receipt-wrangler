@@ -26,6 +26,7 @@ doc/CheckReceiptProcessingSettingsConnectivityCommand.md
 doc/Claims.md
 doc/Comment.md
 doc/CommentApi.md
+doc/CreateRecognitionTaskCommand.md
 doc/CurrencySeparator.md
 doc/CurrencySymbolPosition.md
 doc/CustomField.md
@@ -45,6 +46,7 @@ doc/FileData.md
 doc/FileDataView.md
 doc/FilterOperation.md
 doc/GetNewRefreshToken200Response.md
+doc/GetRecognitionTasksResponse.md
 doc/GetSystemTaskCommand.md
 doc/Group.md
 doc/GroupFilter.md
@@ -91,6 +93,10 @@ doc/ReceiptPagedRequestFilter.md
 doc/ReceiptProcessingSettings.md
 doc/ReceiptProcessingSettingsApi.md
 doc/ReceiptStatus.md
+doc/RecognitionTask.md
+doc/RecognitionTaskApi.md
+doc/RecognitionTaskStage.md
+doc/RecognitionTaskStatus.md
 doc/ReportApi.md
 doc/ReportColumn.md
 doc/ReportDetail.md
@@ -102,6 +108,7 @@ doc/ReportTemplate.md
 doc/ReportTemplateGrant.md
 doc/ReportTemplateOption.md
 doc/ResetPasswordCommand.md
+doc/RetryRecognitionTaskCommand.md
 doc/Role.md
 doc/RoleApi.md
 doc/SearchApi.md
@@ -171,6 +178,7 @@ lib/src/api/prompt_api.dart
 lib/src/api/receipt_api.dart
 lib/src/api/receipt_image_api.dart
 lib/src/api/receipt_processing_settings_api.dart
+lib/src/api/recognition_task_api.dart
 lib/src/api/report_api.dart
 lib/src/api/role_api.dart
 lib/src/api/search_api.dart
@@ -209,6 +217,7 @@ lib/src/model/check_email_connectivity_command.dart
 lib/src/model/check_receipt_processing_settings_connectivity_command.dart
 lib/src/model/claims.dart
 lib/src/model/comment.dart
+lib/src/model/create_recognition_task_command.dart
 lib/src/model/currency_separator.dart
 lib/src/model/currency_symbol_position.dart
 lib/src/model/custom_field.dart
@@ -225,6 +234,7 @@ lib/src/model/file_data.dart
 lib/src/model/file_data_view.dart
 lib/src/model/filter_operation.dart
 lib/src/model/get_new_refresh_token200_response.dart
+lib/src/model/get_recognition_tasks_response.dart
 lib/src/model/get_system_task_command.dart
 lib/src/model/group.dart
 lib/src/model/group_filter.dart
@@ -263,6 +273,9 @@ lib/src/model/receipt_paged_request_command.dart
 lib/src/model/receipt_paged_request_filter.dart
 lib/src/model/receipt_processing_settings.dart
 lib/src/model/receipt_status.dart
+lib/src/model/recognition_task.dart
+lib/src/model/recognition_task_stage.dart
+lib/src/model/recognition_task_status.dart
 lib/src/model/report_column.dart
 lib/src/model/report_detail.dart
 lib/src/model/report_document.dart
@@ -273,6 +286,7 @@ lib/src/model/report_template.dart
 lib/src/model/report_template_grant.dart
 lib/src/model/report_template_option.dart
 lib/src/model/reset_password_command.dart
+lib/src/model/retry_recognition_task_command.dart
 lib/src/model/role.dart
 lib/src/model/search_result.dart
 lib/src/model/sign_up_command.dart

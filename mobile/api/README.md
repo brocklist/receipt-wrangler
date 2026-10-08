@@ -134,6 +134,11 @@ Class | Method | HTTP request | Description
 [*ReceiptProcessingSettingsApi*](doc/ReceiptProcessingSettingsApi.md) | [**getPagedProcessingSettings**](doc/ReceiptProcessingSettingsApi.md#getpagedprocessingsettings) | **POST** /receiptProcessingSettings/getPagedProcessingSettings | Gets paged processing settings
 [*ReceiptProcessingSettingsApi*](doc/ReceiptProcessingSettingsApi.md) | [**getReceiptProcessingSettingsById**](doc/ReceiptProcessingSettingsApi.md#getreceiptprocessingsettingsbyid) | **GET** /receiptProcessingSettings/{id} | Get receipt processing settings by id
 [*ReceiptProcessingSettingsApi*](doc/ReceiptProcessingSettingsApi.md) | [**updateReceiptProcessingSettingsById**](doc/ReceiptProcessingSettingsApi.md#updatereceiptprocessingsettingsbyid) | **PUT** /receiptProcessingSettings/{id} | Update receipt processing settings by id
+[*RecognitionTaskApi*](doc/RecognitionTaskApi.md) | [**createRecognitionTask**](doc/RecognitionTaskApi.md#createrecognitiontask) | **POST** /recognitionTask | Register a Quick Scan file before uploading
+[*RecognitionTaskApi*](doc/RecognitionTaskApi.md) | [**getRecognitionTask**](doc/RecognitionTaskApi.md#getrecognitiontask) | **GET** /recognitionTask/{id} | Refresh one authorized task
+[*RecognitionTaskApi*](doc/RecognitionTaskApi.md) | [**getRecognitionTasks**](doc/RecognitionTaskApi.md#getrecognitiontasks) | **GET** /recognitionTask | Get authorized Quick Scan tasks and scoped counts
+[*RecognitionTaskApi*](doc/RecognitionTaskApi.md) | [**retryRecognitionTask**](doc/RecognitionTaskApi.md#retryrecognitiontask) | **POST** /recognitionTask/{id}/retry | Retry a failed task using its retained source
+[*RecognitionTaskApi*](doc/RecognitionTaskApi.md) | [**uploadRecognitionTaskFile**](doc/RecognitionTaskApi.md#uploadrecognitiontaskfile) | **PUT** /recognitionTask/{id}/file | Upload a complete Quick Scan source file
 [*ReportApi*](doc/ReportApi.md) | [**createReportTemplate**](doc/ReportApi.md#createreporttemplate) | **POST** /report/template | Save a report template
 [*ReportApi*](doc/ReportApi.md) | [**deleteReportTemplate**](doc/ReportApi.md#deletereporttemplate) | **DELETE** /report/template/{id} | Delete a report template
 [*ReportApi*](doc/ReportApi.md) | [**duplicateReportTemplate**](doc/ReportApi.md#duplicatereporttemplate) | **POST** /report/template/{id}/duplicate | Duplicate a report template
@@ -210,6 +215,7 @@ Class | Method | HTTP request | Description
  - [CheckReceiptProcessingSettingsConnectivityCommand](doc/CheckReceiptProcessingSettingsConnectivityCommand.md)
  - [Claims](doc/Claims.md)
  - [Comment](doc/Comment.md)
+ - [CreateRecognitionTaskCommand](doc/CreateRecognitionTaskCommand.md)
  - [CurrencySeparator](doc/CurrencySeparator.md)
  - [CurrencySymbolPosition](doc/CurrencySymbolPosition.md)
  - [CustomField](doc/CustomField.md)
@@ -225,6 +231,7 @@ Class | Method | HTTP request | Description
  - [FileDataView](doc/FileDataView.md)
  - [FilterOperation](doc/FilterOperation.md)
  - [GetNewRefreshToken200Response](doc/GetNewRefreshToken200Response.md)
+ - [GetRecognitionTasksResponse](doc/GetRecognitionTasksResponse.md)
  - [GetSystemTaskCommand](doc/GetSystemTaskCommand.md)
  - [Group](doc/Group.md)
  - [GroupFilter](doc/GroupFilter.md)
@@ -263,6 +270,9 @@ Class | Method | HTTP request | Description
  - [ReceiptPagedRequestFilter](doc/ReceiptPagedRequestFilter.md)
  - [ReceiptProcessingSettings](doc/ReceiptProcessingSettings.md)
  - [ReceiptStatus](doc/ReceiptStatus.md)
+ - [RecognitionTask](doc/RecognitionTask.md)
+ - [RecognitionTaskStage](doc/RecognitionTaskStage.md)
+ - [RecognitionTaskStatus](doc/RecognitionTaskStatus.md)
  - [ReportColumn](doc/ReportColumn.md)
  - [ReportDetail](doc/ReportDetail.md)
  - [ReportDocument](doc/ReportDocument.md)
@@ -273,6 +283,7 @@ Class | Method | HTTP request | Description
  - [ReportTemplateGrant](doc/ReportTemplateGrant.md)
  - [ReportTemplateOption](doc/ReportTemplateOption.md)
  - [ResetPasswordCommand](doc/ResetPasswordCommand.md)
+ - [RetryRecognitionTaskCommand](doc/RetryRecognitionTaskCommand.md)
  - [Role](doc/Role.md)
  - [SearchResult](doc/SearchResult.md)
  - [SignUpCommand](doc/SignUpCommand.md)

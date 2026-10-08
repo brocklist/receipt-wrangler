@@ -8,7 +8,6 @@ import (
 	"receipt-wrangler/api/internal/utils"
 
 	"github.com/google/generative-ai-go/genai"
-	"golang.org/x/net/context"
 	"google.golang.org/api/option"
 )
 
@@ -31,7 +30,7 @@ func NewGeminiClient(
 func (gemini GeminiClient) GetChatCompletion() (structs.ChatCompletionResult, error) {
 	result := structs.ChatCompletionResult{}
 
-	ctx := context.Background()
+	ctx := gemini.Options.RequestContext()
 	key, err := gemini.getKey(gemini.Options.DecryptKey)
 	if err != nil {
 		return result, err

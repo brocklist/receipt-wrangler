@@ -35,6 +35,7 @@ import 'package:openapi/src/model/check_email_connectivity_command.dart';
 import 'package:openapi/src/model/check_receipt_processing_settings_connectivity_command.dart';
 import 'package:openapi/src/model/claims.dart';
 import 'package:openapi/src/model/comment.dart';
+import 'package:openapi/src/model/create_recognition_task_command.dart';
 import 'package:openapi/src/model/currency_separator.dart';
 import 'package:openapi/src/model/currency_symbol_position.dart';
 import 'package:openapi/src/model/custom_field.dart';
@@ -50,6 +51,7 @@ import 'package:openapi/src/model/file_data.dart';
 import 'package:openapi/src/model/file_data_view.dart';
 import 'package:openapi/src/model/filter_operation.dart';
 import 'package:openapi/src/model/get_new_refresh_token200_response.dart';
+import 'package:openapi/src/model/get_recognition_tasks_response.dart';
 import 'package:openapi/src/model/get_system_task_command.dart';
 import 'package:openapi/src/model/group.dart';
 import 'package:openapi/src/model/group_filter.dart';
@@ -88,6 +90,9 @@ import 'package:openapi/src/model/receipt_paged_request_command.dart';
 import 'package:openapi/src/model/receipt_paged_request_filter.dart';
 import 'package:openapi/src/model/receipt_processing_settings.dart';
 import 'package:openapi/src/model/receipt_status.dart';
+import 'package:openapi/src/model/recognition_task.dart';
+import 'package:openapi/src/model/recognition_task_stage.dart';
+import 'package:openapi/src/model/recognition_task_status.dart';
 import 'package:openapi/src/model/report_column.dart';
 import 'package:openapi/src/model/report_detail.dart';
 import 'package:openapi/src/model/report_document.dart';
@@ -98,6 +103,7 @@ import 'package:openapi/src/model/report_template.dart';
 import 'package:openapi/src/model/report_template_grant.dart';
 import 'package:openapi/src/model/report_template_option.dart';
 import 'package:openapi/src/model/reset_password_command.dart';
+import 'package:openapi/src/model/retry_recognition_task_command.dart';
 import 'package:openapi/src/model/role.dart';
 import 'package:openapi/src/model/search_result.dart';
 import 'package:openapi/src/model/sign_up_command.dart';
@@ -165,6 +171,7 @@ part 'serializers.g.dart';
   CheckReceiptProcessingSettingsConnectivityCommand,
   Claims,
   Comment,
+  CreateRecognitionTaskCommand,
   CurrencySeparator,
   CurrencySymbolPosition,
   CustomField,
@@ -180,6 +187,7 @@ part 'serializers.g.dart';
   FileDataView,
   FilterOperation,
   GetNewRefreshToken200Response,
+  GetRecognitionTasksResponse,
   GetSystemTaskCommand,
   Group,
   GroupFilter,
@@ -218,6 +226,9 @@ part 'serializers.g.dart';
   ReceiptPagedRequestFilter,
   ReceiptProcessingSettings,
   ReceiptStatus,
+  RecognitionTask,
+  RecognitionTaskStage,
+  RecognitionTaskStatus,
   ReportColumn,
   ReportDetail,
   ReportDocument,
@@ -228,6 +239,7 @@ part 'serializers.g.dart';
   ReportTemplateGrant,
   ReportTemplateOption,
   ResetPasswordCommand,
+  RetryRecognitionTaskCommand,
   Role,
   SearchResult,
   SignUpCommand,

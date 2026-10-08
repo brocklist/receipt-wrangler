@@ -38,6 +38,7 @@ import { SystemSettingsState } from "../store/system-settings.state";
 import { SystemTaskTableState } from "../store/system-task-table.state";
 import { TagTableState } from "../store/tag-table.state";
 import { UserState } from "../store/user.state";
+import { QuickScanTaskState } from "../receipts/recognition-tasks/quick-scan-task.state";
 import { environment } from "src/environments/environment.development";
 
 const ngxsStates = [
@@ -52,6 +53,7 @@ const ngxsStates = [
   GroupTableState,
   LayoutState,
   PromptTableState,
+  QuickScanTaskState,
   ReceiptProcessingSettingsTableState,
   ReceiptProcessingSettingsTaskTableState,
   ReceiptTableState,

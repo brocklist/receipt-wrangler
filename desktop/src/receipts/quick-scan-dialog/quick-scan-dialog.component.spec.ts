@@ -1,5 +1,5 @@
 import { provideHttpClientTesting } from "@angular/common/http/testing";
-import { CUSTOM_ELEMENTS_SCHEMA } from "@angular/core";
+import { CUSTOM_ELEMENTS_SCHEMA, signal } from "@angular/core";
 import { ComponentFixture, TestBed, } from "@angular/core/testing";
 import { FormArray, FormControl, ReactiveFormsModule } from "@angular/forms";
 import { MatDialog, MatDialogModule, MatDialogRef } from "@angular/material/dialog";
@@ -8,16 +8,17 @@ import { NoopAnimationsModule } from "@angular/platform-browser/animations";
 import { ActivatedRoute } from "@angular/router";
 import { NgxsModule, Store } from "@ngxs/store";
 import { CarouselModule } from "ngx-bootstrap/carousel";
-import { of } from "rxjs";
 import { SharedUiModule } from "src/shared-ui/shared-ui.module";
 import { LayoutState } from "src/store/layout.state";
 import { ReceiptFileUploadCommand } from "../../interfaces";
-import { ApiModule, ReceiptService, ReceiptStatus } from "../../open-api";
+import { ApiModule, ReceiptStatus } from "../../open-api";
 import { PipesModule } from "../../pipes";
 import { SnackbarService } from "../../services";
 import { AuthState, GroupState } from "../../store";
 import { QuickScanDialogComponent } from "./quick-scan-dialog.component";
 import { provideHttpClient, withInterceptorsFromDi } from "@angular/common/http";
+import { QuickScanTaskService } from "../recognition-tasks/quick-scan-task.service";
+import { initialTaskState } from "../recognition-tasks/quick-scan-task.state";
 
 describe("QuickScanDialogComponent", () => {
   let component: QuickScanDialogComponent;
@@ -25,6 +26,7 @@ describe("QuickScanDialogComponent", () => {
   let store: Store;
 
   beforeEach(() => {
+    localStorage.setItem("receipt-wrangler-language", "en-US");
     TestBed.configureTestingModule({
     declarations: [QuickScanDialogComponent],
     schemas: [CUSTOM_ELEMENTS_SCHEMA],
@@ -38,6 +40,9 @@ describe("QuickScanDialogComponent", () => {
         ReactiveFormsModule,
         SharedUiModule],
     providers: [
+        { provide: QuickScanTaskService, useValue: {
+          state: signal(initialTaskState()), submit: jest.fn().mockReturnValue(["batch-1"]),
+        } },
         {
             provide: ActivatedRoute,
             useValue: {},
@@ -203,10 +208,8 @@ describe("QuickScanDialogComponent", () => {
         groups: { groups: [group], selectedGroupId: "", selectedDashboardId: "" },
       });
 
-      const receiptService = TestBed.inject(ReceiptService);
-      const serviceSpy = jest
-        .spyOn(receiptService, "quickScanReceipt")
-        .mockReturnValue(of({} as any));
+      const serviceSpy = TestBed.inject(QuickScanTaskService).submit;
+      const closeSpy = jest.spyOn(TestBed.inject(MatDialogRef), "close");
 
       const fileData = { file: { name: "a" } } as any;
       component.fileLoaded(fileData);
@@ -218,14 +221,16 @@ describe("QuickScanDialogComponent", () => {
 
       component.submitButtonClicked();
 
-      expect(serviceSpy).toHaveBeenCalledWith(
-        [fileData.file],
-        [2],
-        [""],
-        [""],
-        ["10"],
-        ["20"]
-      );
+      expect(serviceSpy).toHaveBeenCalledWith([{
+        file: fileData.file, groupId: 2, paidByUserId: undefined, status: undefined,
+        categoryIds: [10], tagIds: [20],
+      }]);
+      expect(component.submitted()).toBe(true);
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('[data-testid="quick-scan-current-batch"]')).toBeTruthy();
+      expect(closeSpy).not.toHaveBeenCalled();
+      component.submitButtonClicked();
+      expect(serviceSpy).toHaveBeenCalledTimes(1);
     } finally {
       URL.createObjectURL = originalCreateObjectURL;
     }

@@ -6,6 +6,8 @@ import { LayoutState } from "src/store/layout.state";
 import { ToggleIsSidebarOpen } from "src/store/layout.state.actions";
 import { AuthService, NotificationsService, Permission } from "../../open-api";
 import { AuthState, GroupState } from "../../store";
+import { localizeUiTextPair } from "../../i18n/language";
+import { QuickScanTaskService } from "../../receipts/recognition-tasks/quick-scan-task.service";
 
 @Component({
     selector: "app-header",
@@ -14,6 +16,7 @@ import { AuthState, GroupState } from "../../store";
     standalone: false
 })
 export class HeaderComponent {
+  public readonly text = localizeUiTextPair;
   public isLoggedIn = this.store.selectSignal(AuthState.isLoggedIn);
 
   public selectedGroupId = this.store.selectSignal(GroupState.selectedGroupId);
@@ -59,7 +62,8 @@ export class HeaderComponent {
     private authService: AuthService,
     private notificationsService: NotificationsService,
     private router: Router,
-    private store: Store
+    private store: Store,
+    public readonly recognitionTasks: QuickScanTaskService,
   ) {
     this.listenForLoggedInUser();
   }

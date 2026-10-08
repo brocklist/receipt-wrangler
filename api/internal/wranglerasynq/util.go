@@ -1,13 +1,15 @@
 package wranglerasynq
 
 import (
+	"encoding/json"
 	"errors"
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/repositories"
+	"receipt-wrangler/api/internal/services"
 	"receipt-wrangler/api/internal/structs"
 )
 
-func SetActivityCanBeRestarted(activities *[]structs.Activity) error {
+func SetActivityCanBeRestarted(activities *[]structs.Activity, userId uint) error {
 	inspector, err := GetAsynqInspector()
 	if err != nil {
 		return err
@@ -41,6 +43,22 @@ func SetActivityCanBeRestarted(activities *[]structs.Activity) error {
 			for i := 0; i < len(rerunableArchivedTasks); i++ {
 				task := rerunableArchivedTasks[i]
 				if task.ID == systemTask.AsynqTaskId {
+					var payload models.RecognitionTaskPayload
+					if json.Unmarshal(task.Payload, &payload) == nil && payload.RecognitionTaskId > 0 {
+						record, err := repositories.NewRecognitionTaskRepository(nil).Get(payload.RecognitionTaskId)
+						if err != nil {
+							return err
+						}
+						// The handler also rechecks the acting user's permissions.
+						if record.Status != models.RecognitionFailed || record.Generation != payload.Generation {
+							break
+						}
+						if err = services.NewRecognitionTaskService().Flags(userId, &record); err != nil {
+							return err
+						}
+						activity.CanBeRestarted = record.CanRetry
+						break
+					}
 					activity.CanBeRestarted = true
 					break
 				}

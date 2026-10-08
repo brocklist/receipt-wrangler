@@ -9,8 +9,13 @@ import { customFieldResolverFn } from "../resolvers/custom-field.resolver";
 import { receiptResolverFn } from "../resolvers/receipt.resolver";
 import { ReceiptFormComponent } from "./receipt-form/receipt-form.component";
 import { ReceiptsTableComponent } from "./receipts-table/receipts-table.component";
+import { RecognitionTasksPageComponent } from "./recognition-tasks/recognition-tasks-page.component";
 
 const routes: Routes = [
+  {
+    path: "recognition-tasks",
+    component: RecognitionTasksPageComponent,
+  },
   {
     path: "group/:groupId",
     component: ReceiptsTableComponent,

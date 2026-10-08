@@ -1,0 +1,60 @@
+<app-table-header [headerText]="text('识别任务', 'Recognition tasks')">
+  <app-button data-testid="recognition-refresh" icon="refresh" matButtonType="iconButton"
+    [tooltip]="text('刷新任务', 'Refresh tasks')" (clicked)="tasks.refresh()"></app-button>
+  <app-button data-testid="recognition-language" [buttonText]="language.isChinese() ? 'EN' : '中文'"
+    (clicked)="language.toggle()"></app-button>
+</app-table-header>
+<p class="task-page-caption">{{ text('每个文件独立上传和识别。上传显示实际字节进度；识别显示当前阶段与用时。', 'Each file uploads and processes independently. Upload progress shows real bytes; recognition shows its stage and elapsed time.') }}</p>
+@if (tasks.state().connectionError) {
+  <div class="connection-notice" role="status" data-testid="recognition-reconnect">{{ text('状态同步中断，正在重连。任务的最后状态已保留。', 'Status synchronization interrupted. Reconnecting while retaining the last known task state.') }}</div>
+}
+@if (tasks.state().permissionBlockedRequestIds.length) {
+  <div class="connection-notice" role="status" data-testid="recognition-permission-reconnect">
+    {{ text('分组权限变化，暂时无法确认部分上传是否已登记。恢复收据查看权限后会重新同步；系统不会自动重传。', 'Group permissions changed, so some uploads cannot be confirmed yet. Restore receipt access to sync again. The app will not replay uploads automatically.') }}
+  </div>
+}
+@if (tasks.state().reselectNoticeIds.length) {
+  <div class="connection-notice" role="status" data-testid="recognition-reselect-notice">
+    <span>{{ text('刷新后未找到这些请求对应的任务。请在快速识别中重新选择原文件并从头上传。', 'No task was found for these requests after refresh. Select the original files in Quick Scan to restart their full uploads.') }}</span>
+    <app-button [buttonText]="text('知道了', 'Dismiss')" (clicked)="tasks.dismissReselectNotices()"></app-button>
+  </div>
+}
+@if (tasks.state().readError) {
+  <div class="connection-notice" role="alert" data-testid="recognition-read-error">{{ tasks.state().readError }}</div>
+}
+@if (reselectRows().length) {
+  <section class="reselect-panel" role="status" data-testid="recognition-reselect-required">
+    <p>{{ text('以下文件未被服务端接收，请重新选择原文件并从头上传。', 'The server did not receive these files. Select each original file to restart its upload from the beginning.') }}</p>
+    @for (row of reselectRows(); track row.id) {
+      <app-recognition-task-row [row]="row"></app-recognition-task-row>
+    }
+  </section>
+}
+<div class="task-summary" [attr.aria-label]="text('任务数量', 'Task counts')">
+  <app-card><span header>{{ text('进行中', 'Active') }}</span><strong content>{{ tasks.state().activeCount }}</strong></app-card>
+  <app-card><span header>{{ text('等待上传', 'Waiting for upload') }}</span><strong content>{{ tasks.state().awaitingUploadCount }}</strong></app-card>
+  <app-card><span header>{{ text('正在识别', 'Recognizing') }}</span><strong content>{{ tasks.state().runningCount }}</strong></app-card>
+  <app-card><span header>{{ text('失败', 'Failed') }}</span><strong content>{{ tasks.state().failedCount }}</strong></app-card>
+</div>
+@if (canReadAll()) {
+  <app-filter-bar [value]="tasks.state().filter.scope" [tabs]="[
+    {value: 'own', label: text('我的任务', 'My tasks')},
+    {value: 'all', label: text('所有用户', 'All users')}
+  ]" (valueChange)="scopeChanged($any($event))"></app-filter-bar>
+}
+<div class="task-filters">
+  <app-filter-bar [tabs]="tabs()" [value]="tasks.state().filter.bucket" (valueChange)="bucketChanged($event)"></app-filter-bar>
+  <app-select [label]="text('分组', 'Group')" [inputFormControl]="groupFilter" [options]="groupOptions()"></app-select>
+  <app-select [label]="text('状态', 'Status')" [inputFormControl]="statusFilter" [options]="statusOptions"></app-select>
+</div>
+<div class="task-table" data-testid="recognition-task-table">
+  <app-table [columns]="columns()" [displayedColumns]="columns().length ? ['task'] : []" [dataSource]="dataSource()"
+    [pagination]="true" [length]="tasks.state().totalCount" [page]="tasks.state().filter.page - 1"
+    [pageSize]="tasks.state().filter.pageSize" (pageChange)="pageChanged($event)"></app-table>
+  @if (!dataSource().data.length && !tasks.state().syncing && !reselectRows().length) {
+    <p class="task-empty" data-testid="recognition-empty">{{ text('暂无符合条件的任务。通过快速识别提交文件后，可在这里查看进度。', 'No matching tasks. Submit files through Quick Scan to monitor them here.') }}</p>
+  }
+</div>
+<ng-template #taskRow let-element="element">
+  <app-recognition-task-row [row]="element"></app-recognition-task-row>
+</ng-template>

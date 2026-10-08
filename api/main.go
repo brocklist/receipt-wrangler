@@ -73,6 +73,12 @@ func main() {
 	logging.LogStd(logging.LOG_LEVEL_INFO, "Initializing Imagick...")
 	imagick.Initialize()
 	defer imagick.Terminate()
+	// Durable Quick Scan state is repaired after startup and every 30 seconds.
+	recognitionContext, stopRecognitionReconciler := context.WithCancel(context.Background())
+	defer stopRecognitionReconciler()
+	if err = wranglerasynq.StartRecognitionTaskReconciler(recognitionContext); err != nil {
+		logging.LogStd(logging.LOG_LEVEL_FATAL, "Could not start recognition task reconciliation")
+	}
 
 	systemSettingsRepository := repositories.NewSystemSettingsRepository(nil)
 	systemSettings, err := systemSettingsRepository.GetSystemSettings()
@@ -106,6 +112,7 @@ func main() {
 	httpServer := startHttpServer(router)
 
 	<-stop
+	stopRecognitionReconciler()
 
 	wranglerasynq.ShutDownEmbeddedAsynqServer()
 	wranglerasynq.ShutDownEmbeddedAsynqScheduler()

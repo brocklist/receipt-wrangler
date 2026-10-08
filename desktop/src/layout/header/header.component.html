@@ -34,6 +34,12 @@
       >
         <mat-icon>receipt_long</mat-icon>
       </button>
+      <button mat-icon-button color="accent" class="nav-button recognition-tasks-entry"
+        data-testid="recognition-tasks-entry" routerLink="/receipts/recognition-tasks" routerLinkActive="active-link"
+        [matTooltip]="text('识别任务', 'Recognition tasks')" [attr.aria-label]="text('识别任务', 'Recognition tasks')"
+        [matBadge]="recognitionTasks.ownActiveCount()" [matBadgeHidden]="recognitionTasks.ownActiveCount() === 0">
+        <mat-icon>fact_check</mat-icon>
+      </button>
       @for (shortcut of userPreferences()?.userShortcuts ?? []; track shortcut["id"]) {
         <a [href]="shortcut.url">
           <button

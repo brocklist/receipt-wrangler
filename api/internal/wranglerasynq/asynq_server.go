@@ -41,8 +41,10 @@ func StartEmbeddedAsynqServer() error {
 	}
 
 	asynqConfig := asynq.Config{
-		Concurrency: systemSettings.TaskConcurrency,
-		Queues:      queuePriorityMap,
+		Concurrency:    systemSettings.TaskConcurrency,
+		Queues:         queuePriorityMap,
+		RetryDelayFunc: recognitionRetryDelay,
+		ErrorHandler:   asynq.ErrorHandlerFunc(recognitionTaskError),
 	}
 
 	server = asynq.NewServer(

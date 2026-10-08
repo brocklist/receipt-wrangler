@@ -10,6 +10,7 @@ import (
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
 	"receipt-wrangler/api/internal/repositories"
+	"receipt-wrangler/api/internal/services"
 	"receipt-wrangler/api/internal/structs"
 	"receipt-wrangler/api/internal/utils"
 	"receipt-wrangler/api/internal/wranglerasynq"
@@ -101,7 +102,7 @@ func GetActivitiesForGroups(w http.ResponseWriter, r *http.Request) {
 				return http.StatusInternalServerError, err
 			}
 
-			err = wranglerasynq.SetActivityCanBeRestarted(&activities)
+			err = wranglerasynq.SetActivityCanBeRestarted(&activities, structs.GetClaims(r).UserId)
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}
@@ -182,6 +183,26 @@ func RerunActivity(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logging.LogStd(logging.LOG_LEVEL_ERROR, err.Error())
 		utils.WriteCustomErrorResponse(w, errorMsg, http.StatusInternalServerError)
+		return
+	}
+	if payload.RecognitionTaskId > 0 {
+		// This legacy action has no version body. Read the current version, then
+		// let the same FAILED/version CAS fence concurrent or repeated clicks.
+		service := services.NewRecognitionTaskService()
+		current, err := service.GetVisible(structs.GetClaims(r).UserId, payload.RecognitionTaskId)
+		if err != nil {
+			recognitionError(w, err)
+			return
+		}
+		if current.Generation != payload.Generation {
+			recognitionError(w, services.ErrRecognitionConflict)
+			return
+		}
+		if _, err = service.Retry(structs.GetClaims(r).UserId, current.ID, current.Version); err != nil {
+			recognitionError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 

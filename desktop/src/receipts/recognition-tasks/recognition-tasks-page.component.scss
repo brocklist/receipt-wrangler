@@ -1,0 +1,16 @@
+:host { display: block; max-width: 1200px; margin: 0 auto; }
+.task-page-caption { color: #64748b; margin: 8px 0 24px; }
+.task-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.task-summary strong { font-size: 28px; }
+.task-filters { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 16px 0; }
+.task-filters app-select { width: 200px; }
+.connection-notice { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+.reselect-panel { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+.reselect-panel > p { margin: 0 0 8px; color: #92400e; }
+.task-table { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+.task-empty { padding: 24px; color: #64748b; }
+@media (max-width: 720px) {
+  .task-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .task-filters { gap: 8px; }
+  .task-filters app-select { flex: 1 1 130px; min-width: 0; }
+}
