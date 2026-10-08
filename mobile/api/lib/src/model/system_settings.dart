@@ -37,6 +37,11 @@ part 'system_settings.g.dart';
 /// * [taskQueueConfigurations] 
 /// * [mcpEnabled] - Whether the OAuth 2.1-protected MCP server is enabled
 /// * [mcpPublicUrl] - Externally reachable origin used for MCP OAuth/metadata/redirect URLs and token audience
+/// * [showLoginQr] - Whether to show the mobile-setup QR code on the desktop login page
+/// * [mobileServerUrl] - Server/API URL mobile clients connect to; encoded into the login QR's deep link
+/// * [refreshTokenValidForHours] - How long a refresh token stays valid, in hours. Refresh tokens rotate on every use, so this is how long a user can be away and still return signed in, not an absolute session cap. 1-720 (30 days); 0 means unset and falls back to the default.
+/// * [mcpRefreshTokenValidForHours] - The same for MCP/OAuth connector refresh tokens, kept separate so a long window chosen for human convenience does not extend third-party client tokens. 1-720 (30 days); 0 means unset and falls back to the default.
+/// * [tempFileRetentionHours] - How long a file in temp/ is kept once nothing can still act on it, i.e. how long a user has to rerun, preview or download the source image of a failed upload. 24-8760 (1 year); 0 means unset and falls back to the default.
 @BuiltValue()
 abstract class SystemSettings implements BaseModel, Built<SystemSettings, SystemSettingsBuilder> {
   /// Whether the OAuth 2.1-protected MCP server is enabled
@@ -51,9 +56,17 @@ abstract class SystemSettings implements BaseModel, Built<SystemSettings, System
   @BuiltValueField(wireName: r'pdfDpi')
   int? get pdfDpi;
 
+  /// How long a file in temp/ is kept once nothing can still act on it, i.e. how long a user has to rerun, preview or download the source image of a failed upload. 24-8760 (1 year); 0 means unset and falls back to the default.
+  @BuiltValueField(wireName: r'tempFileRetentionHours')
+  int? get tempFileRetentionHours;
+
   /// Currency display
   @BuiltValueField(wireName: r'currencyDisplay')
   String? get currencyDisplay;
+
+  /// Whether to show the mobile-setup QR code on the desktop login page
+  @BuiltValueField(wireName: r'showLoginQr')
+  bool? get showLoginQr;
 
   /// Whether to hide decimal places
   @BuiltValueField(wireName: r'currencyHideDecimalPlaces')
@@ -79,6 +92,14 @@ abstract class SystemSettings implements BaseModel, Built<SystemSettings, System
   @BuiltValueField(wireName: r'receiptProcessingSettingsId')
   int? get receiptProcessingSettingsId;
 
+  /// Server/API URL mobile clients connect to; encoded into the login QR's deep link
+  @BuiltValueField(wireName: r'mobileServerUrl')
+  String? get mobileServerUrl;
+
+  /// How long a refresh token stays valid, in hours. Refresh tokens rotate on every use, so this is how long a user can be away and still return signed in, not an absolute session cap. 1-720 (30 days); 0 means unset and falls back to the default.
+  @BuiltValueField(wireName: r'refreshTokenValidForHours')
+  int? get refreshTokenValidForHours;
+
   @BuiltValueField(wireName: r'currencySymbolPosition')
   CurrencySymbolPosition? get currencySymbolPosition;
   // enum currencySymbolPositionEnum {  START,  END,  };
@@ -99,6 +120,10 @@ abstract class SystemSettings implements BaseModel, Built<SystemSettings, System
   @BuiltValueField(wireName: r'enableLocalSignUp')
   bool? get enableLocalSignUp;
 
+  /// The same for MCP/OAuth connector refresh tokens, kept separate so a long window chosen for human convenience does not extend third-party client tokens. 1-720 (30 days); 0 means unset and falls back to the default.
+  @BuiltValueField(wireName: r'mcpRefreshTokenValidForHours')
+  int? get mcpRefreshTokenValidForHours;
+
   @BuiltValueField(wireName: r'taskQueueConfigurations')
   BuiltList<TaskQueueConfiguration> get taskQueueConfigurations;
 
@@ -110,16 +135,20 @@ abstract class SystemSettings implements BaseModel, Built<SystemSettings, System
   static void _defaults(SystemSettingsBuilder b) => b
       ..mcpEnabled = false
       ..pdfDpi = 300
+      ..tempFileRetentionHours = 720
       ..currencyDisplay = r'$'
       ..currencyHideDecimalPlaces = false
-      ..debugOcr = false
-      ..createdBy = 0
-      ..taskConcurrency = 10
-      ..emailPollingInterval = 1800
       ..numWorkers = 1
       ..enableLocalSignUp = false
+      ..mcpRefreshTokenValidForHours = 24
       ..createdByString = ''
-      ..updatedAt = '';
+      ..updatedAt = ''
+      ..showLoginQr = false
+      ..debugOcr = false
+      ..refreshTokenValidForHours = 24
+      ..createdBy = 0
+      ..taskConcurrency = 10
+      ..emailPollingInterval = 1800;
 
   @BuiltValueSerializer(custom: true)
   static Serializer<SystemSettings> get serializer => _$SystemSettingsSerializer();
@@ -144,17 +173,17 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
         specifiedType: const FullType(bool),
       );
     }
-    if (object.currencyThousandthsSeparator != null) {
-      yield r'currencyThousandthsSeparator';
-      yield serializers.serialize(
-        object.currencyThousandthsSeparator,
-        specifiedType: const FullType(CurrencySeparator),
-      );
-    }
     if (object.pdfDpi != null) {
       yield r'pdfDpi';
       yield serializers.serialize(
         object.pdfDpi,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.tempFileRetentionHours != null) {
+      yield r'tempFileRetentionHours';
+      yield serializers.serialize(
+        object.tempFileRetentionHours,
         specifiedType: const FullType(int),
       );
     }
@@ -172,18 +201,84 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
         specifiedType: const FullType(bool),
       );
     }
-    if (object.mcpPublicUrl != null) {
-      yield r'mcpPublicUrl';
-      yield serializers.serialize(
-        object.mcpPublicUrl,
-        specifiedType: const FullType(String),
-      );
-    }
     if (object.currencyDecimalSeparator != null) {
       yield r'currencyDecimalSeparator';
       yield serializers.serialize(
         object.currencyDecimalSeparator,
         specifiedType: const FullType(CurrencySeparator),
+      );
+    }
+    yield r'createdAt';
+    yield serializers.serialize(
+      object.createdAt,
+      specifiedType: const FullType(String),
+    );
+    if (object.mobileServerUrl != null) {
+      yield r'mobileServerUrl';
+      yield serializers.serialize(
+        object.mobileServerUrl,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.numWorkers != null) {
+      yield r'numWorkers';
+      yield serializers.serialize(
+        object.numWorkers,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.enableLocalSignUp != null) {
+      yield r'enableLocalSignUp';
+      yield serializers.serialize(
+        object.enableLocalSignUp,
+        specifiedType: const FullType(bool),
+      );
+    }
+    yield r'id';
+    yield serializers.serialize(
+      object.id,
+      specifiedType: const FullType(int),
+    );
+    if (object.mcpRefreshTokenValidForHours != null) {
+      yield r'mcpRefreshTokenValidForHours';
+      yield serializers.serialize(
+        object.mcpRefreshTokenValidForHours,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.createdByString != null) {
+      yield r'createdByString';
+      yield serializers.serialize(
+        object.createdByString,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.updatedAt != null) {
+      yield r'updatedAt';
+      yield serializers.serialize(
+        object.updatedAt,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.currencyThousandthsSeparator != null) {
+      yield r'currencyThousandthsSeparator';
+      yield serializers.serialize(
+        object.currencyThousandthsSeparator,
+        specifiedType: const FullType(CurrencySeparator),
+      );
+    }
+    if (object.showLoginQr != null) {
+      yield r'showLoginQr';
+      yield serializers.serialize(
+        object.showLoginQr,
+        specifiedType: const FullType(bool),
+      );
+    }
+    if (object.mcpPublicUrl != null) {
+      yield r'mcpPublicUrl';
+      yield serializers.serialize(
+        object.mcpPublicUrl,
+        specifiedType: const FullType(String),
       );
     }
     if (object.debugOcr != null) {
@@ -200,15 +295,17 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
         specifiedType: const FullType(int),
       );
     }
-    yield r'createdAt';
-    yield serializers.serialize(
-      object.createdAt,
-      specifiedType: const FullType(String),
-    );
     if (object.receiptProcessingSettingsId != null) {
       yield r'receiptProcessingSettingsId';
       yield serializers.serialize(
         object.receiptProcessingSettingsId,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.refreshTokenValidForHours != null) {
+      yield r'refreshTokenValidForHours';
+      yield serializers.serialize(
+        object.refreshTokenValidForHours,
         specifiedType: const FullType(int),
       );
     }
@@ -240,44 +337,11 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
         specifiedType: const FullType(int),
       );
     }
-    if (object.numWorkers != null) {
-      yield r'numWorkers';
-      yield serializers.serialize(
-        object.numWorkers,
-        specifiedType: const FullType(int),
-      );
-    }
-    if (object.enableLocalSignUp != null) {
-      yield r'enableLocalSignUp';
-      yield serializers.serialize(
-        object.enableLocalSignUp,
-        specifiedType: const FullType(bool),
-      );
-    }
-    yield r'id';
-    yield serializers.serialize(
-      object.id,
-      specifiedType: const FullType(int),
-    );
     yield r'taskQueueConfigurations';
     yield serializers.serialize(
       object.taskQueueConfigurations,
       specifiedType: const FullType(BuiltList, [FullType(TaskQueueConfiguration)]),
     );
-    if (object.createdByString != null) {
-      yield r'createdByString';
-      yield serializers.serialize(
-        object.createdByString,
-        specifiedType: const FullType(String),
-      );
-    }
-    if (object.updatedAt != null) {
-      yield r'updatedAt';
-      yield serializers.serialize(
-        object.updatedAt,
-        specifiedType: const FullType(String),
-      );
-    }
   }
 
   @override
@@ -308,19 +372,19 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
           ) as bool;
           result.mcpEnabled = valueDes;
           break;
-        case r'currencyThousandthsSeparator':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(CurrencySeparator),
-          ) as CurrencySeparator;
-          result.currencyThousandthsSeparator = valueDes;
-          break;
         case r'pdfDpi':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
           result.pdfDpi = valueDes;
+          break;
+        case r'tempFileRetentionHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.tempFileRetentionHours = valueDes;
           break;
         case r'currencyDisplay':
           final valueDes = serializers.deserialize(
@@ -336,19 +400,89 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
           ) as bool;
           result.currencyHideDecimalPlaces = valueDes;
           break;
-        case r'mcpPublicUrl':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.mcpPublicUrl = valueDes;
-          break;
         case r'currencyDecimalSeparator':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(CurrencySeparator),
           ) as CurrencySeparator;
           result.currencyDecimalSeparator = valueDes;
+          break;
+        case r'createdAt':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.createdAt = valueDes;
+          break;
+        case r'mobileServerUrl':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.mobileServerUrl = valueDes;
+          break;
+        case r'numWorkers':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.numWorkers = valueDes;
+          break;
+        case r'enableLocalSignUp':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.enableLocalSignUp = valueDes;
+          break;
+        case r'id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.id = valueDes;
+          break;
+        case r'mcpRefreshTokenValidForHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.mcpRefreshTokenValidForHours = valueDes;
+          break;
+        case r'createdByString':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.createdByString = valueDes;
+          break;
+        case r'updatedAt':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.updatedAt = valueDes;
+          break;
+        case r'currencyThousandthsSeparator':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(CurrencySeparator),
+          ) as CurrencySeparator;
+          result.currencyThousandthsSeparator = valueDes;
+          break;
+        case r'showLoginQr':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.showLoginQr = valueDes;
+          break;
+        case r'mcpPublicUrl':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.mcpPublicUrl = valueDes;
           break;
         case r'debugOcr':
           final valueDes = serializers.deserialize(
@@ -364,19 +498,19 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
           ) as int;
           result.fallbackReceiptProcessingSettingsId = valueDes;
           break;
-        case r'createdAt':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.createdAt = valueDes;
-          break;
         case r'receiptProcessingSettingsId':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
           result.receiptProcessingSettingsId = valueDes;
+          break;
+        case r'refreshTokenValidForHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.refreshTokenValidForHours = valueDes;
           break;
         case r'createdBy':
           final valueDes = serializers.deserialize(
@@ -406,47 +540,12 @@ class _$SystemSettingsSerializer implements PrimitiveSerializer<SystemSettings> 
           ) as int;
           result.emailPollingInterval = valueDes;
           break;
-        case r'numWorkers':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.numWorkers = valueDes;
-          break;
-        case r'enableLocalSignUp':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(bool),
-          ) as bool;
-          result.enableLocalSignUp = valueDes;
-          break;
-        case r'id':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.id = valueDes;
-          break;
         case r'taskQueueConfigurations':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(BuiltList, [FullType(TaskQueueConfiguration)]),
           ) as BuiltList<TaskQueueConfiguration>;
           result.taskQueueConfigurations.replace(valueDes);
-          break;
-        case r'createdByString':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.createdByString = valueDes;
-          break;
-        case r'updatedAt':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.updatedAt = valueDes;
           break;
         default:
           unhandled.add(key);

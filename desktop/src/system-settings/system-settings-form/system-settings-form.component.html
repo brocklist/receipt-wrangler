@@ -136,6 +136,56 @@
     ></app-checkbox>
   </app-form-section>
   <app-form-section
+    headerText="Session"
+  >
+    <p class="text-muted mb-3">
+      How long a signed-in user can be away before they have to log in again. Sessions renew
+      themselves while the app is in use, so this is an inactivity window rather than a hard limit —
+      someone who uses Receipt Wrangler regularly is never signed out. Lower it for a tighter
+      security posture, raise it so people stay signed in longer. Maximum 720 hours (30 days).
+    </p>
+    <div class="d-flex gap-3 mb-3 duration-row">
+      <app-input
+        label="Stay signed in for"
+        type="number"
+        [inputFormControl]="form | formGet:'refreshTokenValidForValue'"
+        [readonly]="formConfig.mode | inputReadonly"
+      ></app-input>
+      <app-select
+        label="Unit"
+        optionValueKey="value"
+        optionDisplayKey="displayValue"
+        [inputFormControl]="form | formGet:'refreshTokenValidForUnit'"
+        [options]="durationUnits"
+      ></app-select>
+    </div>
+  </app-form-section>
+  <app-form-section
+    headerText="Temporary Files"
+  >
+    <p class="text-muted mb-3">
+      How long an uploaded file is kept once nothing can still act on it. A quick scan or email upload
+      that fails keeps its image for this long, so you can retry it, or preview and download the
+      original to enter the receipt by hand. After that the file is reclaimed and those options
+      disappear. Minimum 24 hours, maximum 8760 hours (1 year).
+    </p>
+    <div class="d-flex gap-3 mb-3 duration-row">
+      <app-input
+        label="Keep failed uploads for"
+        type="number"
+        [inputFormControl]="form | formGet:'tempFileRetentionValue'"
+        [readonly]="formConfig.mode | inputReadonly"
+      ></app-input>
+      <app-select
+        label="Unit"
+        optionValueKey="value"
+        optionDisplayKey="displayValue"
+        [inputFormControl]="form | formGet:'tempFileRetentionUnit'"
+        [options]="durationUnits"
+      ></app-select>
+    </div>
+  </app-form-section>
+  <app-form-section
     headerText="MCP Server"
   >
     <p class="text-muted mb-3">
@@ -144,22 +194,61 @@
       server live, no restart required.
     </p>
     <app-checkbox
+      class="d-block mb-3"
       label="Enable MCP Server"
       [inputFormControl]="form | formGet:'mcpEnabled'"
       [readonly]="formConfig.mode | inputReadonly"
     ></app-checkbox>
     <app-input
+      class="d-block mb-3"
       label="Public URL"
       hint="Externally reachable origin (scheme + host, no path), e.g. https://receipts.example.com. Used to build the OAuth and connector URLs. Changing it invalidates existing connector tokens."
       [readonly]="formConfig.mode | inputReadonly"
       [inputFormControl]="form | formGet:'mcpPublicUrl'"
     ></app-input>
+    <div class="d-flex gap-3 mb-3 duration-row">
+      <app-input
+        label="Connector sign-in lasts"
+        type="number"
+        hint="How long a connected client stays authorized before it has to sign in again. Kept separate from the app session above so a long user-facing window does not extend third-party access. Maximum 720 hours (30 days)."
+        [inputFormControl]="form | formGet:'mcpRefreshTokenValidForValue'"
+        [readonly]="formConfig.mode | inputReadonly"
+      ></app-input>
+      <app-select
+        label="Unit"
+        optionValueKey="value"
+        optionDisplayKey="displayValue"
+        [inputFormControl]="form | formGet:'mcpRefreshTokenValidForUnit'"
+        [options]="durationUnits"
+      ></app-select>
+    </div>
     @if ((form | formGet:'mcpEnabled').value && (form | formGet:'mcpPublicUrl').value) {
-      <div class="d-flex flex-column mb-2">
+      <div class="d-flex flex-column mb-3">
         <strong>Connector URL</strong>
         <span>{{ (form | formGet:'mcpPublicUrl').value }}/mcp</span>
       </div>
     }
+  </app-form-section>
+  <app-form-section
+    headerText="Mobile App Setup"
+  >
+    <p class="text-muted mb-3">
+      Shows a QR code on the login page that opens the Receipt Wrangler mobile app and pre-fills the
+      server URL below, so users can connect their phone without typing it. Leave this off to hide the
+      QR code.
+    </p>
+    <app-checkbox
+      class="d-block mb-3"
+      label="Show login QR code"
+      [inputFormControl]="form | formGet:'showLoginQr'"
+      [readonly]="formConfig.mode | inputReadonly"
+    ></app-checkbox>
+    <app-input
+      label="Mobile Server URL"
+      hint="The server/API URL mobile clients connect to, e.g. https://receipts.example.com/api. Encoded into the login QR code."
+      [readonly]="formConfig.mode | inputReadonly"
+      [inputFormControl]="form | formGet:'mobileServerUrl'"
+    ></app-input>
   </app-form-section>
   <app-form-button-bar
     [mode]="formConfig.mode"

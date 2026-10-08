@@ -31,6 +31,10 @@ import { ReceiptPagedRequestCommand } from '../model/receiptPagedRequestCommand'
 // @ts-ignore
 import { ReceiptStatus } from '../model/receiptStatus';
 // @ts-ignore
+import { ReceiptSummary } from '../model/receiptSummary';
+// @ts-ignore
+import { ReceiptSummaryCommand } from '../model/receiptSummaryCommand';
+// @ts-ignore
 import { UpsertReceiptCommand } from '../model/upsertReceiptCommand';
 
 // @ts-ignore
@@ -207,10 +211,11 @@ export class ReceiptService {
 
     /**
      * Create receipt
-     * This will create a receipt [SYSTEM USER]
+     * This will create a receipt [SYSTEM USER]. Deprecated in favour of createReceiptWithFiles, which carries the receipt\&#39;s images in the same call; kept for already-released clients. It enforces the caller\&#39;s role-required fields, so when the caller\&#39;s group role requires an image this endpoint always returns 400 (it cannot carry one).
      * @param upsertReceiptCommand Receipt to create
      * @param observe set whether or not to return the data Observable as the body, response or events. defaults to returning the body.
      * @param reportProgress flag to report request and response progress.
+     * @deprecated
      */
     public createReceipt(upsertReceiptCommand: UpsertReceiptCommand, observe?: 'body', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<Receipt>;
     public createReceipt(upsertReceiptCommand: UpsertReceiptCommand, observe?: 'response', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpResponse<Receipt>>;
@@ -283,6 +288,117 @@ export class ReceiptService {
             {
                 context: localVarHttpContext,
                 body: upsertReceiptCommand,
+                responseType: <any>responseType_,
+                withCredentials: this.configuration.withCredentials,
+                headers: localVarHeaders,
+                observe: observe,
+                transferCache: localVarTransferCache,
+                reportProgress: reportProgress
+            }
+        );
+    }
+
+    /**
+     * Create receipt with files
+     * Creates a receipt, its comments and its images in one atomic call: a failure anywhere leaves no receipt, image or file behind. Requires group.receipts.create in the receipt\&#39;s group. Every file must be an image or PDF (checked before anything is written). Returns 400 when the caller\&#39;s group role requires a comment (key &#x60;comments&#x60;) or an image (key &#x60;files&#x60;) that the request does not carry. [SYSTEM USER]
+     * @param receipt 
+     * @param files Images (or PDFs) to attach to the new receipt. Together with the receipt they share the server\\\&#39;s 50 MB request body limit.
+     * @param observe set whether or not to return the data Observable as the body, response or events. defaults to returning the body.
+     * @param reportProgress flag to report request and response progress.
+     */
+    public createReceiptWithFiles(receipt: UpsertReceiptCommand, files?: Array<Blob>, observe?: 'body', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<Receipt>;
+    public createReceiptWithFiles(receipt: UpsertReceiptCommand, files?: Array<Blob>, observe?: 'response', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpResponse<Receipt>>;
+    public createReceiptWithFiles(receipt: UpsertReceiptCommand, files?: Array<Blob>, observe?: 'events', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpEvent<Receipt>>;
+    public createReceiptWithFiles(receipt: UpsertReceiptCommand, files?: Array<Blob>, observe: any = 'body', reportProgress: boolean = false, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any> {
+        if (receipt === null || receipt === undefined) {
+            throw new Error('Required parameter receipt was null or undefined when calling createReceiptWithFiles.');
+        }
+
+        let localVarHeaders = this.defaultHeaders;
+
+        let localVarCredential: string | undefined;
+        // authentication (apiKeyAuth) required
+        localVarCredential = this.configuration.lookupCredential('apiKeyAuth');
+        if (localVarCredential) {
+            localVarHeaders = localVarHeaders.set('Authorization', localVarCredential);
+        }
+
+        // authentication (bearerAuth) required
+        localVarCredential = this.configuration.lookupCredential('bearerAuth');
+        if (localVarCredential) {
+            localVarHeaders = localVarHeaders.set('Authorization', 'Bearer ' + localVarCredential);
+        }
+
+        let localVarHttpHeaderAcceptSelected: string | undefined = options && options.httpHeaderAccept;
+        if (localVarHttpHeaderAcceptSelected === undefined) {
+            // to determine the Accept header
+            const httpHeaderAccepts: string[] = [
+                'application/json'
+            ];
+            localVarHttpHeaderAcceptSelected = this.configuration.selectHeaderAccept(httpHeaderAccepts);
+        }
+        if (localVarHttpHeaderAcceptSelected !== undefined) {
+            localVarHeaders = localVarHeaders.set('Accept', localVarHttpHeaderAcceptSelected);
+        }
+
+        let localVarHttpContext: HttpContext | undefined = options && options.context;
+        if (localVarHttpContext === undefined) {
+            localVarHttpContext = new HttpContext();
+        }
+
+        let localVarTransferCache: boolean | undefined = options && options.transferCache;
+        if (localVarTransferCache === undefined) {
+            localVarTransferCache = true;
+        }
+
+        // to determine the Content-Type header
+        const consumes: string[] = [
+            'multipart/form-data'
+        ];
+
+        const canConsumeForm = this.canConsumeForm(consumes);
+
+        let localVarFormParams: { append(param: string, value: any): any; };
+        let localVarUseForm = false;
+        let localVarConvertFormParamsToString = false;
+        // use FormData to transmit files using content-type "multipart/form-data"
+        // see https://stackoverflow.com/questions/4007969/application-x-www-form-urlencoded-or-multipart-form-data
+        localVarUseForm = canConsumeForm;
+        if (localVarUseForm) {
+            localVarFormParams = new FormData();
+        } else {
+            localVarFormParams = new HttpParams({encoder: this.encoder});
+        }
+
+        if (receipt !== undefined) {
+            localVarFormParams = localVarFormParams.append('receipt', localVarUseForm ? new Blob([JSON.stringify(receipt)], {type: 'application/json'}) : <any>receipt) as any || localVarFormParams;
+        }
+        if (files) {
+            if (localVarUseForm) {
+                files.forEach((element) => {
+                    localVarFormParams = localVarFormParams.append('files', <any>element) as any || localVarFormParams;
+            })
+            } else {
+                localVarFormParams = localVarFormParams.append('files', [...files].join(COLLECTION_FORMATS['csv'])) as any || localVarFormParams;
+            }
+        }
+
+        let responseType_: 'text' | 'json' | 'blob' = 'json';
+        if (localVarHttpHeaderAcceptSelected) {
+            if (localVarHttpHeaderAcceptSelected.startsWith('text')) {
+                responseType_ = 'text';
+            } else if (this.configuration.isJsonMime(localVarHttpHeaderAcceptSelected)) {
+                responseType_ = 'json';
+            } else {
+                responseType_ = 'blob';
+            }
+        }
+
+        let localVarPath = `/receipt/withFiles`;
+        return this.httpClient.request<Receipt>('post', `${this.configuration.basePath}${localVarPath}`,
+            {
+                context: localVarHttpContext,
+                body: localVarConvertFormParamsToString ? localVarFormParams.toString() : localVarFormParams,
                 responseType: <any>responseType_,
                 withCredentials: this.configuration.withCredentials,
                 headers: localVarHeaders,
@@ -528,6 +644,98 @@ export class ReceiptService {
     }
 
     /**
+     * Gets the receipt summary for a group
+     * Returns the block of totals rendered under the receipts table: a receipt count and amount total over the WHOLE filtered result set (not the current page), then the same figures per configured status. Which statuses break out and which currency custom fields are totalled come from the group\&#39;s receipt settings, not from the request. Gated on group.receipts.read, the same permission as the receipts it aggregates. [SYSTEM USER]
+     * @param groupId Summarize the receipts that belong to groupId
+     * @param receiptSummaryCommand 
+     * @param observe set whether or not to return the data Observable as the body, response or events. defaults to returning the body.
+     * @param reportProgress flag to report request and response progress.
+     */
+    public getReceiptSummaryForGroup(groupId: number, receiptSummaryCommand: ReceiptSummaryCommand, observe?: 'body', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<ReceiptSummary>;
+    public getReceiptSummaryForGroup(groupId: number, receiptSummaryCommand: ReceiptSummaryCommand, observe?: 'response', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpResponse<ReceiptSummary>>;
+    public getReceiptSummaryForGroup(groupId: number, receiptSummaryCommand: ReceiptSummaryCommand, observe?: 'events', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpEvent<ReceiptSummary>>;
+    public getReceiptSummaryForGroup(groupId: number, receiptSummaryCommand: ReceiptSummaryCommand, observe: any = 'body', reportProgress: boolean = false, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any> {
+        if (groupId === null || groupId === undefined) {
+            throw new Error('Required parameter groupId was null or undefined when calling getReceiptSummaryForGroup.');
+        }
+        if (receiptSummaryCommand === null || receiptSummaryCommand === undefined) {
+            throw new Error('Required parameter receiptSummaryCommand was null or undefined when calling getReceiptSummaryForGroup.');
+        }
+
+        let localVarHeaders = this.defaultHeaders;
+
+        let localVarCredential: string | undefined;
+        // authentication (apiKeyAuth) required
+        localVarCredential = this.configuration.lookupCredential('apiKeyAuth');
+        if (localVarCredential) {
+            localVarHeaders = localVarHeaders.set('Authorization', localVarCredential);
+        }
+
+        // authentication (bearerAuth) required
+        localVarCredential = this.configuration.lookupCredential('bearerAuth');
+        if (localVarCredential) {
+            localVarHeaders = localVarHeaders.set('Authorization', 'Bearer ' + localVarCredential);
+        }
+
+        let localVarHttpHeaderAcceptSelected: string | undefined = options && options.httpHeaderAccept;
+        if (localVarHttpHeaderAcceptSelected === undefined) {
+            // to determine the Accept header
+            const httpHeaderAccepts: string[] = [
+                'application/json'
+            ];
+            localVarHttpHeaderAcceptSelected = this.configuration.selectHeaderAccept(httpHeaderAccepts);
+        }
+        if (localVarHttpHeaderAcceptSelected !== undefined) {
+            localVarHeaders = localVarHeaders.set('Accept', localVarHttpHeaderAcceptSelected);
+        }
+
+        let localVarHttpContext: HttpContext | undefined = options && options.context;
+        if (localVarHttpContext === undefined) {
+            localVarHttpContext = new HttpContext();
+        }
+
+        let localVarTransferCache: boolean | undefined = options && options.transferCache;
+        if (localVarTransferCache === undefined) {
+            localVarTransferCache = true;
+        }
+
+
+        // to determine the Content-Type header
+        const consumes: string[] = [
+            'application/json'
+        ];
+        const httpContentTypeSelected: string | undefined = this.configuration.selectHeaderContentType(consumes);
+        if (httpContentTypeSelected !== undefined) {
+            localVarHeaders = localVarHeaders.set('Content-Type', httpContentTypeSelected);
+        }
+
+        let responseType_: 'text' | 'json' | 'blob' = 'json';
+        if (localVarHttpHeaderAcceptSelected) {
+            if (localVarHttpHeaderAcceptSelected.startsWith('text')) {
+                responseType_ = 'text';
+            } else if (this.configuration.isJsonMime(localVarHttpHeaderAcceptSelected)) {
+                responseType_ = 'json';
+            } else {
+                responseType_ = 'blob';
+            }
+        }
+
+        let localVarPath = `/receipt/group/${this.configuration.encodeParam({name: "groupId", value: groupId, in: "path", style: "simple", explode: false, dataType: "number", dataFormat: undefined})}/summary`;
+        return this.httpClient.request<ReceiptSummary>('post', `${this.configuration.basePath}${localVarPath}`,
+            {
+                context: localVarHttpContext,
+                body: receiptSummaryCommand,
+                responseType: <any>responseType_,
+                withCredentials: this.configuration.withCredentials,
+                headers: localVarHeaders,
+                observe: observe,
+                transferCache: localVarTransferCache,
+                reportProgress: reportProgress
+            }
+        );
+    }
+
+    /**
      * Gets receipts
      * This will return receipts with the option to sort and filter [SYSTEM USER]
      * @param groupId Get all receipts that belong to groupId
@@ -721,13 +929,14 @@ export class ReceiptService {
      * @param statuses 
      * @param categoryIds 
      * @param tagIds 
+     * @param comments 
      * @param observe set whether or not to return the data Observable as the body, response or events. defaults to returning the body.
      * @param reportProgress flag to report request and response progress.
      */
-    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, observe?: 'body', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any>;
-    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, observe?: 'response', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpResponse<any>>;
-    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, observe?: 'events', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpEvent<any>>;
-    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, observe: any = 'body', reportProgress: boolean = false, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any> {
+    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, comments?: Array<string>, observe?: 'body', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any>;
+    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, comments?: Array<string>, observe?: 'response', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpResponse<any>>;
+    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, comments?: Array<string>, observe?: 'events', reportProgress?: boolean, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<HttpEvent<any>>;
+    public quickScanReceipt(files: Array<Blob>, groupIds: Array<number>, paidByUserIds: Array<number>, statuses: Array<ReceiptStatus>, categoryIds?: Array<string>, tagIds?: Array<string>, comments?: Array<string>, observe: any = 'body', reportProgress: boolean = false, options?: {httpHeaderAccept?: 'application/json', context?: HttpContext, transferCache?: boolean}): Observable<any> {
         if (files === null || files === undefined) {
             throw new Error('Required parameter files was null or undefined when calling quickScanReceipt.');
         }
@@ -849,6 +1058,15 @@ export class ReceiptService {
             })
             } else {
                 localVarFormParams = localVarFormParams.append('tagIds', [...tagIds].join(COLLECTION_FORMATS['csv'])) as any || localVarFormParams;
+            }
+        }
+        if (comments) {
+            if (localVarUseForm) {
+                comments.forEach((element) => {
+                    localVarFormParams = localVarFormParams.append('comments', <any>element) as any || localVarFormParams;
+            })
+            } else {
+                localVarFormParams = localVarFormParams.append('comments', [...comments].join(COLLECTION_FORMATS['csv'])) as any || localVarFormParams;
             }
         }
 

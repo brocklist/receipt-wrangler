@@ -1,18 +1,8 @@
 import { computed, Injectable, signal } from "@angular/core";
-import chineseMessages from "./zh-CN.json";
-import englishOverrides from "./english-overrides.json";
 
 export type AppLanguage = "zh-CN" | "en-US";
 
 const LANGUAGE_STORAGE_KEY = "receipt-wrangler-language";
-const chineseToEnglish: Record<string, string> = {};
-const chineseMessagesByText: Record<string, string> = chineseMessages;
-
-for (const [english, chinese] of Object.entries(chineseMessages)) {
-  chineseToEnglish[chinese] ??= english;
-}
-
-Object.assign(chineseToEnglish, englishOverrides.defaults);
 
 export function getAppLanguage(): AppLanguage {
   try {
@@ -22,30 +12,6 @@ export function getAppLanguage(): AppLanguage {
   } catch {
     return "zh-CN";
   }
-}
-
-export function getAngularLocale(): AppLanguage {
-  return getAppLanguage();
-}
-
-export function isChineseLanguage(): boolean {
-  return getAppLanguage() === "zh-CN";
-}
-
-/** Translate known application-owned text; unknown and user-provided values stay intact. */
-export function localizeUiText(value: string | null | undefined): string {
-  if (value == null || value === "") return value ?? "";
-
-  const leading = value.match(/^\s*/)?.[0] ?? "";
-  const trailing = value.match(/\s*$/)?.[0] ?? "";
-  const key = value.trim();
-  if (!key) return value;
-
-  const translated = getAppLanguage() === "zh-CN"
-  ? chineseMessagesByText[key] ?? key
-    : chineseToEnglish[key] ?? key;
-
-  return `${leading}${translated}${trailing}`;
 }
 
 /** Select an explicit translation for app-owned messages with interpolated user data. */

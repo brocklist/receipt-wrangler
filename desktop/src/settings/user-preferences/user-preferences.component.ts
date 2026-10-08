@@ -54,17 +54,17 @@ export class UserPreferencesComponent extends BaseFormComponent implements OnIni
     this.originalUserShortcuts.set(userPreferences?.userShortcuts ?? []);
 
     this.form = this.formBuilder.group({
-      showLargeImagePreviews: userPreferences?.showLargeImagePreviews ?? false,
       quickScanDefaultPaidById: userPreferences?.quickScanDefaultPaidById ?? "",
       quickScanDefaultGroupId: userPreferences?.quickScanDefaultGroupId ?? "",
       quickScanDefaultStatus: userPreferences?.quickScanDefaultStatus ?? "",
+      closeChipSelectOnSelect:
+        userPreferences?.closeChipSelectOnSelect ?? false,
       userShortcuts: this.formBuilder.array(this.originalUserShortcuts().map((userShortcut, i) => this.buildUserShortcut(i, userShortcut))),
     });
 
 
     if (this.formConfig.mode === FormMode.view) {
       this.form.get("quickScanDefaultStatus")?.disable();
-      this.form.get("showLargeImagePreviews")?.disable();
     }
   }
 

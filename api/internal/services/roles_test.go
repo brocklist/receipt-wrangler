@@ -41,6 +41,59 @@ func TestCreateGroupRoleWithGrantsExposesGrantIds(t *testing.T) {
 	}
 }
 
+func TestGroupRoleSeesAllMembersRoundTrips(t *testing.T) {
+	defer repositories.TruncateTestDb()
+
+	service := NewRoleService(nil)
+	created, err := service.CreateRole(commands.UpsertRoleCommand{
+		Name:           "Supervisor Role",
+		Scope:          permissions.ScopeGroup,
+		Permissions:    []string{permissions.GroupReceiptsRead},
+		SeesAllMembers: true,
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	if !created.SeesAllMembers {
+		utils.PrintTestError(t, created.SeesAllMembers, true)
+	}
+
+	// It surfaces on the read model too.
+	roles, err := service.GetRoles()
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	found := false
+	for _, role := range roles {
+		if role.Id == created.Id {
+			found = true
+			if !role.SeesAllMembers {
+				utils.PrintTestError(t, role.SeesAllMembers, true)
+			}
+		}
+	}
+	if !found {
+		utils.PrintTestError(t, "role not found in GetRoles", created.Id)
+	}
+
+	// Update toggles it off; the returned view reflects false.
+	updated, err := service.UpdateRole(created.Id, commands.UpsertRoleCommand{
+		Name:           "Supervisor Role",
+		Scope:          permissions.ScopeGroup,
+		Permissions:    []string{permissions.GroupReceiptsRead},
+		SeesAllMembers: false,
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	if updated.SeesAllMembers {
+		utils.PrintTestError(t, updated.SeesAllMembers, false)
+	}
+}
+
 func TestCreateGroupRoleRejectsNonExistentGrant(t *testing.T) {
 	defer repositories.TruncateTestDb()
 
@@ -184,7 +237,7 @@ func TestUpdateGroupRoleServiceReplacesGrants(t *testing.T) {
 	catB := models.Category{Name: "B"}
 	repositories.GetDB().Create(&catB)
 
-	created, err := roleRepository.CreateGroupRole("Role", "", []string{permissions.GroupReceiptsRead}, []uint{catA.ID}, nil, nil, false)
+	created, err := roleRepository.CreateGroupRole("Role", "", []string{permissions.GroupReceiptsRead}, []uint{catA.ID}, nil, nil, false, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -213,7 +266,7 @@ func TestUpdateRolePersistsChanges(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	roleRepository := repositories.NewRoleRepository(nil)
 
-	created, err := roleRepository.CreateAppRole("App Role", "Description", []string{permissions.AppUsersCreate})
+	created, err := roleRepository.CreateAppRole("App Role", "Description", []string{permissions.AppUsersCreate}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -246,11 +299,66 @@ func TestUpdateRolePersistsChanges(t *testing.T) {
 	}
 }
 
+func TestCreateAndUpdateRoleRoundTripSkipDefaultGroupCreation(t *testing.T) {
+	defer repositories.TruncateTestDb()
+	service := NewRoleService(nil)
+
+	roleView, err := service.CreateRole(commands.UpsertRoleCommand{
+		Name:                     "Shared Groups Only",
+		Scope:                    permissions.ScopeApp,
+		Permissions:              []string{permissions.AppUsersRead},
+		SkipDefaultGroupCreation: true,
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	if !roleView.SkipDefaultGroupCreation {
+		utils.PrintTestError(t, roleView.SkipDefaultGroupCreation, true)
+	}
+
+	// Toggling it off through the service must stick.
+	updated, err := service.UpdateRole(roleView.Id, commands.UpsertRoleCommand{
+		Name:                     "Shared Groups Only",
+		Scope:                    permissions.ScopeApp,
+		Permissions:              []string{permissions.AppUsersRead},
+		SkipDefaultGroupCreation: false,
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	if updated.SkipDefaultGroupCreation {
+		utils.PrintTestError(t, updated.SkipDefaultGroupCreation, false)
+	}
+}
+
+func TestCreateGroupRoleNeverCarriesSkipDefaultGroupCreation(t *testing.T) {
+	defer repositories.TruncateTestDb()
+	service := NewRoleService(nil)
+
+	roleView, err := service.CreateRole(commands.UpsertRoleCommand{
+		Name:        "Group Role",
+		Scope:       permissions.ScopeGroup,
+		Permissions: []string{permissions.GroupReceiptsRead},
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	if roleView.SkipDefaultGroupCreation {
+		utils.PrintTestError(t, roleView.SkipDefaultGroupCreation, false)
+	}
+}
+
 func TestUpdateRoleBlocksTypeSwitch(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	roleRepository := repositories.NewRoleRepository(nil)
 
-	created, err := roleRepository.CreateAppRole("App Role", "Description", []string{permissions.AppUsersCreate})
+	created, err := roleRepository.CreateAppRole("App Role", "Description", []string{permissions.AppUsersCreate}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -319,7 +427,7 @@ func TestSetDefaultRoleApp(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	roleRepository := repositories.NewRoleRepository(nil)
 
-	created, err := roleRepository.CreateAppRole("App Role", "", []string{permissions.AppUsersRead})
+	created, err := roleRepository.CreateAppRole("App Role", "", []string{permissions.AppUsersRead}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -376,7 +484,7 @@ func TestSetDefaultRoleTypeMismatch(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	roleRepository := repositories.NewRoleRepository(nil)
 
-	created, err := roleRepository.CreateAppRole("App Role", "", []string{permissions.AppUsersRead})
+	created, err := roleRepository.CreateAppRole("App Role", "", []string{permissions.AppUsersRead}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -404,7 +512,7 @@ func TestDeleteRoleRejectsDefault(t *testing.T) {
 	defer repositories.TruncateTestDb()
 	roleRepository := repositories.NewRoleRepository(nil)
 
-	created, err := roleRepository.CreateAppRole("Default App Role", "", []string{permissions.AppUsersRead})
+	created, err := roleRepository.CreateAppRole("Default App Role", "", []string{permissions.AppUsersRead}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -423,5 +531,55 @@ func TestDeleteRoleRejectsDefault(t *testing.T) {
 	// The default role must be untouched.
 	if _, err := roleRepository.GetAppRoleById(created.ID); err != nil {
 		utils.PrintTestError(t, err, "default role should be untouched")
+	}
+}
+
+func TestCreateAndUpdateRoleRoundTripReceiptRequirements(t *testing.T) {
+	defer repositories.TruncateTestDb()
+	service := NewRoleService(nil)
+
+	roleView, err := service.CreateRole(commands.UpsertRoleCommand{
+		Name:                  "Thorough",
+		Scope:                 permissions.ScopeGroup,
+		Permissions:           []string{permissions.GroupReceiptsCreate},
+		RequireReceiptComment: true,
+		RequireReceiptImage:   true,
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	if !roleView.RequireReceiptComment || !roleView.RequireReceiptImage {
+		t.Errorf("created view = (%v, %v), want (true, true)", roleView.RequireReceiptComment, roleView.RequireReceiptImage)
+	}
+
+	stored, err := repositories.NewRoleRepository(nil).GetGroupRoleById(roleView.Id)
+	if err != nil {
+		t.Fatalf("GetGroupRoleById: %v", err)
+	}
+	if !stored.RequireReceiptComment || !stored.RequireReceiptImage {
+		t.Errorf("stored = (%v, %v), want (true, true)", stored.RequireReceiptComment, stored.RequireReceiptImage)
+	}
+
+	// Toggling one off through the service must stick.
+	updated, err := service.UpdateRole(roleView.Id, commands.UpsertRoleCommand{
+		Name:                  "Thorough",
+		Scope:                 permissions.ScopeGroup,
+		Permissions:           []string{permissions.GroupReceiptsCreate},
+		RequireReceiptComment: false,
+		RequireReceiptImage:   true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRole: %v", err)
+	}
+	if updated.RequireReceiptComment || !updated.RequireReceiptImage {
+		t.Errorf("updated view = (%v, %v), want (false, true)", updated.RequireReceiptComment, updated.RequireReceiptImage)
+	}
+
+	stored, err = repositories.NewRoleRepository(nil).GetGroupRoleById(roleView.Id)
+	if err != nil {
+		t.Fatalf("GetGroupRoleById: %v", err)
+	}
+	if stored.RequireReceiptComment || !stored.RequireReceiptImage {
+		t.Errorf("stored after update = (%v, %v), want (false, true)", stored.RequireReceiptComment, stored.RequireReceiptImage)
 	}
 }

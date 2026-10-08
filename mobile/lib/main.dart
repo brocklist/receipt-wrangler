@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
+import 'package:image_picker_android/image_picker_android.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
@@ -38,17 +41,46 @@ import 'package:receipt_wrangler_mobile/services/token_refresh_service.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/circular_loading_progress.dart';
 import 'package:receipt_wrangler_mobile/service/crash_reporting.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/screen_wrapper.dart';
+import 'package:receipt_wrangler_mobile/utils/url.dart';
 
 import 'package:receipt_wrangler_mobile/profile/screens/user_profile_screen.dart';
+import 'package:receipt_wrangler_mobile/theme/app_theme.dart';
 
 import 'constants/search.dart';
 import 'models/context_model.dart';
 import 'models/custom_field_model.dart';
 import 'models/system_settings_model.dart';
 
+/// Opts into the Android Photo Picker, which is a no-op on every other platform.
+///
+/// Split out of [main] only so both branches are reachable from a test —
+/// [ImagePickerPlatform.instance] is a real plugin instance at runtime, and
+/// `buildApp()` (what the e2e suite pumps) never runs [main]. [platform]
+/// defaults to the live instance, so the production call site is unchanged.
+@visibleForTesting
+void configureAndroidPhotoPicker([ImagePickerPlatform? platform]) {
+  final picker = platform ?? ImagePickerPlatform.instance;
+  if (picker is ImagePickerAndroid) {
+    picker.useAndroidPhotoPicker = true;
+  }
+}
+
 void main() async {
   final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+
+  // Opt into the Android Photo Picker on API 33-35. It is already the default
+  // on 36+, where this is a no-op, and below 33 the Play Services backport
+  // covers it (see the ModuleDependencies service in AndroidManifest.xml).
+  //
+  // This is plugin *configuration* -- no permission request, no channel round
+  // trip, no system dialog -- so it does not fall under the launch-time-work
+  // ban documented in `_ReceiptWrangler.initState` for the iOS render-pause
+  // freeze (GitHub #617). Do not move it there. It has to run before the first
+  // pick, and `ensureInitialized()` above has just registered the plugin whose
+  // instance it reads.
+  configureAndroidPhotoPicker();
+
   await GlobalSharedPreferences.initialize();
 
   // Crash/error reporting is opt-out (on by default). When disabled we don't
@@ -68,7 +100,11 @@ void main() async {
 /// returns a fresh tree — the `GoRouter` lives inside `_ReceiptWrangler`
 /// as a per-`State` `late final` field, so test #N never inherits test
 /// #N-1's router location.
-Widget buildApp() {
+///
+/// [initialDeepLink] / [deepLinkStream] are test seams standing in for the two
+/// `app_links` sources (cold start / warm delivery). `main()` passes neither, so
+/// production always reads the real plugin. See [ReceiptWrangler].
+Widget buildApp({Uri? initialDeepLink, Stream<Uri>? deepLinkStream}) {
   return MultiProvider(
     providers: [
       ChangeNotifierProvider(create: (_) => AuthModel()),
@@ -86,7 +122,10 @@ Widget buildApp() {
       ChangeNotifierProvider(create: (_) => UserModel()),
       ChangeNotifierProvider(create: (_) => UserPreferencesModel()),
     ],
-    child: const ReceiptWrangler(),
+    child: ReceiptWrangler(
+      initialDeepLink: initialDeepLink,
+      deepLinkStream: deepLinkStream,
+    ),
   );
 }
 
@@ -213,7 +252,19 @@ GoRouter _buildAppRouter() {
 }
 
 class ReceiptWrangler extends StatefulWidget {
-  const ReceiptWrangler({super.key});
+  const ReceiptWrangler({
+    super.key,
+    this.initialDeepLink,
+    this.deepLinkStream,
+  });
+
+  /// Injectable for tests: stands in for [AppLinks.getInitialLink] (the link
+  /// that cold-launched the app). Null in production.
+  final Uri? initialDeepLink;
+
+  /// Injectable for tests: stands in for [AppLinks.uriLinkStream] (links
+  /// delivered while the app is already running). Null in production.
+  final Stream<Uri>? deepLinkStream;
 
   @override
   State<ReceiptWrangler> createState() => _ReceiptWrangler();
@@ -227,6 +278,12 @@ class _ReceiptWrangler extends State<ReceiptWrangler>
   bool _inLaunchWindow = true;
   late Future<bool> _initFuture;
   bool _initialized = false;
+
+  // Deep-link (App Links / Universal Links) plumbing for
+  // receiptwrangler.io/app/setup. We handle links ourselves via app_links
+  // rather than letting go_router try (and fail) to route /app/setup.
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSubscription;
 
   // GoRouter held per-State instance so each `pumpWidget(buildApp())` in
   // tests gets a fresh router starting at '/'. As a top-level `final` it
@@ -271,6 +328,8 @@ class _ReceiptWrangler extends State<ReceiptWrangler>
     WidgetsBinding.instance.addPostFrameCallback((_) => nudgeFrames());
     _launchWindowTimer =
         Timer(const Duration(seconds: 6), () => _inLaunchWindow = false);
+
+    _initDeepLinks();
   }
 
   @override
@@ -278,10 +337,64 @@ class _ReceiptWrangler extends State<ReceiptWrangler>
     _refreshTimer?.cancel();
     _launchWindowTimer?.cancel();
     _frameNudgeTimer?.cancel();
+    _linkSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _lifecycleListener.dispose();
 
     super.dispose();
+  }
+
+  /// Subscribes to receiptwrangler.io/app/setup deep links. Handles the cold
+  /// start ([AppLinks.getInitialLink]) and warm/resumed ([AppLinks.uriLinkStream])
+  /// cases. A matching link pre-fills the Connect screen's server URL via
+  /// [AuthModel.pendingServerUrl]; it is never auto-connected.
+  ///
+  /// Both sources fall back to the real plugin unless a test supplied
+  /// [ReceiptWrangler.initialDeepLink] / [ReceiptWrangler.deepLinkStream].
+  Future<void> _initDeepLinks() async {
+    // Cold start: the app-link that launched the app. Stash it on AuthModel
+    // immediately so it survives the FutureBuilder first-paint gate and the
+    // Connect screen reads it the moment it mounts.
+    try {
+      final initial = await _resolveInitialDeepLink();
+      if (initial != null) {
+        _handleDeepLink(initial);
+      }
+    } catch (_) {
+      // Ignore an unavailable / malformed initial link.
+    }
+
+    // Warm / resumed: further links delivered while the app is running.
+    _linkSubscription = (widget.deepLinkStream ?? _appLinks.uriLinkStream).listen(
+      _handleDeepLink,
+      onError: (_) {},
+    );
+  }
+
+  /// The cold-start link, from the test seam if one was injected.
+  ///
+  /// Deliberately a separate awaited call rather than
+  /// `widget.initialDeepLink ?? await _appLinks.getInitialLink()`: `??` would
+  /// short-circuit the `await`, so an injected link would be handled
+  /// SYNCHRONOUSLY inside `initState` — routing before the tree is attached, on
+  /// a timing production never sees. Awaiting always yields a microtask, so
+  /// injected and real links arrive at the same point in the lifecycle.
+  Future<Uri?> _resolveInitialDeepLink() async {
+    return widget.initialDeepLink ?? await _appLinks.getInitialLink();
+  }
+
+  void _handleDeepLink(Uri uri) {
+    final serverUrl = extractDeepLinkServerUrl(uri.toString());
+    if (serverUrl == null) {
+      return;
+    }
+
+    // Stash the URL for the Connect screen to pre-fill, then route to it. A
+    // logged-in user hitting '/' is bounced to '/groups' by the auth redirect,
+    // so the pre-fill only surfaces for unauthenticated sessions (intended — a
+    // logged-in user is already set up).
+    authModel.setPendingServerUrl(serverUrl);
+    _router.go('/');
   }
 
   @override
@@ -328,36 +441,7 @@ class _ReceiptWrangler extends State<ReceiptWrangler>
       color: Colors.white,
       debugShowCheckedModeBanner: false,
       title: 'Receipt Wrangler',
-      theme: ThemeData(
-        fontFamily: "Raleway",
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
-        ),
-        chipTheme: ChipThemeData(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(50),
-          ),
-        ),
-        bottomSheetTheme: const BottomSheetThemeData(
-          backgroundColor: Colors.white,
-          modalBackgroundColor: Colors.white,
-          surfaceTintColor: Colors.white,
-        ),
-        colorScheme: const ColorScheme(
-          primary: Color(0xFF27B1FF),
-          secondary: Color(0xFF8EA1AC),
-          surface: Color(0xFFFFFFFF),
-          background: Color(0xFFFFFFFF),
-          error: Color(0xFFd63333),
-          onPrimary: Color(0xFFFFFFFF),
-          onSecondary: Color(0xFF000000),
-          onSurface: Color(0xFF000000),
-          onBackground: Color(0xFF000000),
-          onError: Color(0xFFFFFFFF),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
+      theme: buildAppTheme(),
       routerConfig: _router,
       // Hosts an invisible repaint pump (see [nudgeFrames]) so the app can
       // force frames after returning from an inactive state and recover from

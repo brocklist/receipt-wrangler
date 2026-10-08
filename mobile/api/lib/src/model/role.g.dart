@@ -32,6 +32,18 @@ class _$Role extends Role {
   @override
   final bool? includeOwnPaidReceipts;
   @override
+  final bool? seesAllMembers;
+  @override
+  final bool? skipDefaultGroupCreation;
+  @override
+  final bool? requiresIndividualCategoryGrants;
+  @override
+  final bool? requiresIndividualTagGrants;
+  @override
+  final bool? requireReceiptComment;
+  @override
+  final bool? requireReceiptImage;
+  @override
   final BuiltList<ReportTemplateGrant>? reportTemplateGrants;
 
   factory _$Role([void Function(RoleBuilder)? updates]) =>
@@ -50,6 +62,12 @@ class _$Role extends Role {
       this.tagGrants,
       this.paidByUserGrants,
       this.includeOwnPaidReceipts,
+      this.seesAllMembers,
+      this.skipDefaultGroupCreation,
+      this.requiresIndividualCategoryGrants,
+      this.requiresIndividualTagGrants,
+      this.requireReceiptComment,
+      this.requireReceiptImage,
       this.reportTemplateGrants})
       : super._();
   @override
@@ -75,6 +93,13 @@ class _$Role extends Role {
         tagGrants == other.tagGrants &&
         paidByUserGrants == other.paidByUserGrants &&
         includeOwnPaidReceipts == other.includeOwnPaidReceipts &&
+        seesAllMembers == other.seesAllMembers &&
+        skipDefaultGroupCreation == other.skipDefaultGroupCreation &&
+        requiresIndividualCategoryGrants ==
+            other.requiresIndividualCategoryGrants &&
+        requiresIndividualTagGrants == other.requiresIndividualTagGrants &&
+        requireReceiptComment == other.requireReceiptComment &&
+        requireReceiptImage == other.requireReceiptImage &&
         reportTemplateGrants == other.reportTemplateGrants;
   }
 
@@ -93,6 +118,12 @@ class _$Role extends Role {
     _$hash = $jc(_$hash, tagGrants.hashCode);
     _$hash = $jc(_$hash, paidByUserGrants.hashCode);
     _$hash = $jc(_$hash, includeOwnPaidReceipts.hashCode);
+    _$hash = $jc(_$hash, seesAllMembers.hashCode);
+    _$hash = $jc(_$hash, skipDefaultGroupCreation.hashCode);
+    _$hash = $jc(_$hash, requiresIndividualCategoryGrants.hashCode);
+    _$hash = $jc(_$hash, requiresIndividualTagGrants.hashCode);
+    _$hash = $jc(_$hash, requireReceiptComment.hashCode);
+    _$hash = $jc(_$hash, requireReceiptImage.hashCode);
     _$hash = $jc(_$hash, reportTemplateGrants.hashCode);
     _$hash = $jf(_$hash);
     return _$hash;
@@ -113,6 +144,13 @@ class _$Role extends Role {
           ..add('tagGrants', tagGrants)
           ..add('paidByUserGrants', paidByUserGrants)
           ..add('includeOwnPaidReceipts', includeOwnPaidReceipts)
+          ..add('seesAllMembers', seesAllMembers)
+          ..add('skipDefaultGroupCreation', skipDefaultGroupCreation)
+          ..add('requiresIndividualCategoryGrants',
+              requiresIndividualCategoryGrants)
+          ..add('requiresIndividualTagGrants', requiresIndividualTagGrants)
+          ..add('requireReceiptComment', requireReceiptComment)
+          ..add('requireReceiptImage', requireReceiptImage)
           ..add('reportTemplateGrants', reportTemplateGrants))
         .toString();
   }
@@ -177,6 +215,39 @@ class RoleBuilder implements Builder<Role, RoleBuilder> {
   set includeOwnPaidReceipts(bool? includeOwnPaidReceipts) =>
       _$this._includeOwnPaidReceipts = includeOwnPaidReceipts;
 
+  bool? _seesAllMembers;
+  bool? get seesAllMembers => _$this._seesAllMembers;
+  set seesAllMembers(bool? seesAllMembers) =>
+      _$this._seesAllMembers = seesAllMembers;
+
+  bool? _skipDefaultGroupCreation;
+  bool? get skipDefaultGroupCreation => _$this._skipDefaultGroupCreation;
+  set skipDefaultGroupCreation(bool? skipDefaultGroupCreation) =>
+      _$this._skipDefaultGroupCreation = skipDefaultGroupCreation;
+
+  bool? _requiresIndividualCategoryGrants;
+  bool? get requiresIndividualCategoryGrants =>
+      _$this._requiresIndividualCategoryGrants;
+  set requiresIndividualCategoryGrants(
+          bool? requiresIndividualCategoryGrants) =>
+      _$this._requiresIndividualCategoryGrants =
+          requiresIndividualCategoryGrants;
+
+  bool? _requiresIndividualTagGrants;
+  bool? get requiresIndividualTagGrants => _$this._requiresIndividualTagGrants;
+  set requiresIndividualTagGrants(bool? requiresIndividualTagGrants) =>
+      _$this._requiresIndividualTagGrants = requiresIndividualTagGrants;
+
+  bool? _requireReceiptComment;
+  bool? get requireReceiptComment => _$this._requireReceiptComment;
+  set requireReceiptComment(bool? requireReceiptComment) =>
+      _$this._requireReceiptComment = requireReceiptComment;
+
+  bool? _requireReceiptImage;
+  bool? get requireReceiptImage => _$this._requireReceiptImage;
+  set requireReceiptImage(bool? requireReceiptImage) =>
+      _$this._requireReceiptImage = requireReceiptImage;
+
   ListBuilder<ReportTemplateGrant>? _reportTemplateGrants;
   ListBuilder<ReportTemplateGrant> get reportTemplateGrants =>
       _$this._reportTemplateGrants ??= ListBuilder<ReportTemplateGrant>();
@@ -203,6 +274,12 @@ class RoleBuilder implements Builder<Role, RoleBuilder> {
       _tagGrants = $v.tagGrants?.toBuilder();
       _paidByUserGrants = $v.paidByUserGrants?.toBuilder();
       _includeOwnPaidReceipts = $v.includeOwnPaidReceipts;
+      _seesAllMembers = $v.seesAllMembers;
+      _skipDefaultGroupCreation = $v.skipDefaultGroupCreation;
+      _requiresIndividualCategoryGrants = $v.requiresIndividualCategoryGrants;
+      _requiresIndividualTagGrants = $v.requiresIndividualTagGrants;
+      _requireReceiptComment = $v.requireReceiptComment;
+      _requireReceiptImage = $v.requireReceiptImage;
       _reportTemplateGrants = $v.reportTemplateGrants?.toBuilder();
       _$v = null;
     }
@@ -242,6 +319,12 @@ class RoleBuilder implements Builder<Role, RoleBuilder> {
             tagGrants: _tagGrants?.build(),
             paidByUserGrants: _paidByUserGrants?.build(),
             includeOwnPaidReceipts: includeOwnPaidReceipts,
+            seesAllMembers: seesAllMembers,
+            skipDefaultGroupCreation: skipDefaultGroupCreation,
+            requiresIndividualCategoryGrants: requiresIndividualCategoryGrants,
+            requiresIndividualTagGrants: requiresIndividualTagGrants,
+            requireReceiptComment: requireReceiptComment,
+            requireReceiptImage: requireReceiptImage,
             reportTemplateGrants: _reportTemplateGrants?.build(),
           );
     } catch (_) {

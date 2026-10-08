@@ -38,6 +38,7 @@ const (
 
 	AppCustomFieldsCreate = "app.custom-fields.create"
 	AppCustomFieldsRead   = "app.custom-fields.read"
+	AppCustomFieldsUpdate = "app.custom-fields.update"
 	AppCustomFieldsDelete = "app.custom-fields.delete"
 
 	AppSystemSettingsRead              = "app.system-settings.read"
@@ -61,6 +62,7 @@ const (
 	AppGroupsCreate         = "app.groups.create"
 	AppGroupsRead           = "app.groups.read"
 	AppGroupsUpdateSettings = "app.groups.update-settings"
+	AppGroupsDelete         = "app.groups.delete"
 
 	AppApiKeysCreate    = "app.api-keys.create"
 	AppApiKeysRead      = "app.api-keys.read"
@@ -112,6 +114,12 @@ const (
 	GroupMembersCreate = "group.members.create"
 	GroupMembersUpdate = "group.members.update"
 	GroupMembersDelete = "group.members.delete"
+	// GroupMembersGrantsUpdate is deliberately SEPARATE from GroupMembersUpdate.
+	// Per-member category/tag grants are a privacy boundary, so the ability to edit
+	// them must not ride along with ordinary member management — otherwise a
+	// restricted member holding group.members.update could widen their own grants
+	// and lift the very restriction the feature exists to enforce.
+	GroupMembersGrantsUpdate = "group.members.grants.update"
 
 	GroupReceiptsCreate    = "group.receipts.create"
 	GroupReceiptsRead      = "group.receipts.read"
@@ -162,6 +170,7 @@ var registry = []Descriptor{
 
 	{AppCustomFieldsCreate, "Create Custom Fields", "Create new custom field definitions.", "Catalog", ScopeApp},
 	{AppCustomFieldsRead, "Read Custom Fields", "List and look up custom fields.", "Catalog", ScopeApp},
+	{AppCustomFieldsUpdate, "Update Custom Fields", "Edit an existing custom field's name, description, and select options. The field's type can never be changed.", "Catalog", ScopeApp},
 	{AppCustomFieldsDelete, "Delete Custom Fields", "Remove custom field definitions.", "Catalog", ScopeApp},
 
 	{AppSystemSettingsRead, "Read System Settings", "View system settings.", "System", ScopeApp},
@@ -184,6 +193,7 @@ var registry = []Descriptor{
 	{AppGroupsCreate, "Create Groups", "Create new groups.", "Group Management", ScopeApp},
 	{AppGroupsRead, "Read All Groups", "List and look up groups across the system, including ones the calling user is not a member of.", "Group Management", ScopeApp},
 	{AppGroupsUpdateSettings, "Update Group System Settings", "Edit system-level settings on any group (separate from per-group ownership editing).", "Group Management", ScopeApp},
+	{AppGroupsDelete, "Delete Any Group", "Permanently delete any group in the system, including ones the calling user is not a member of. Intended for cleaning up abandoned or accidentally created groups; pairs with Read All Groups.", "Group Management", ScopeApp},
 
 	{AppApiKeysCreate, "Create API Keys", "Issue API keys for the calling user.", "Security", ScopeApp},
 	{AppApiKeysRead, "Read API Keys", "List the calling user's API keys.", "Security", ScopeApp},
@@ -230,6 +240,7 @@ var registry = []Descriptor{
 	{GroupMembersCreate, "Add Group Members", "Add members to the group.", "Group", ScopeGroup},
 	{GroupMembersUpdate, "Update Group Members", "Change a member's group role.", "Group", ScopeGroup},
 	{GroupMembersDelete, "Remove Group Members", "Remove members from the group.", "Group", ScopeGroup},
+	{GroupMembersGrantsUpdate, "Assign Member Categories & Tags", "Assign which categories and tags an individual member can see, within the limits of their group role.", "Group", ScopeGroup},
 
 	{GroupReceiptsCreate, "Create Receipts", "Upload images and create receipts.", "Receipts", ScopeGroup},
 	{GroupReceiptsRead, "Read Receipts", "Read, list, and export receipts.", "Receipts", ScopeGroup},

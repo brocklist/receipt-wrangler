@@ -16,6 +16,7 @@ Name | Type | Description | Notes
 **status** | [**ReceiptStatus**](ReceiptStatus.md) |  | [optional] 
 **categoryIds** | **BuiltList&lt;int&gt;** |  | [optional] 
 **tagIds** | **BuiltList&lt;int&gt;** |  | [optional] 
+**comment** | **String** | Optional quick scan receipt comment; group and role rules may require it. | [optional] 
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
 

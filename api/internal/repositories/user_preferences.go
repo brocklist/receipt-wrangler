@@ -67,10 +67,10 @@ func (repository UserPreferncesRepository) UpdateUserPreferences(userId uint, us
 		return models.UserPrefernces{}, err
 	}
 
-	userPreferencesToUpdate.ShowLargeImagePreviews = userPreferences.ShowLargeImagePreviews
 	userPreferencesToUpdate.QuickScanDefaultGroupId = userPreferences.QuickScanDefaultGroupId
 	userPreferencesToUpdate.QuickScanDefaultPaidById = userPreferences.QuickScanDefaultPaidById
 	userPreferencesToUpdate.QuickScanDefaultStatus = userPreferences.QuickScanDefaultStatus
+	userPreferencesToUpdate.CloseChipSelectOnSelect = userPreferences.CloseChipSelectOnSelect
 	userPreferencesToUpdate.UserShortcuts = userPreferences.UserShortcuts
 
 	err = db.Transaction(func(tx *gorm.DB) error {

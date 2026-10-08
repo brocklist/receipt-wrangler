@@ -40,9 +40,9 @@ export interface UserPreferences {
      */
     quickScanDefaultStatus?: ReceiptStatus;
     /**
-     * Whether to show large image previews
+     * Whether multi-select chip fields close their option list after each selection
      */
-    showLargeImagePreviews?: boolean;
+    closeChipSelectOnSelect?: boolean;
     userShortcuts?: Array<UserShortcut>;
 }
 export namespace UserPreferences {

@@ -34,6 +34,30 @@ export interface UpsertRoleCommand {
      */
     includeOwnPaidReceipts?: boolean;
     /**
+     * Whether a GROUP role exempts its members from member-presence isolation (they see, and are seen by, every member of an isolated group). Only valid on group roles.
+     */
+    seesAllMembers?: boolean;
+    /**
+     * Whether users created with this APP role skip the automatic personal \"My Receipts\" group (the virtual \"All\" group is always created). Only valid on app roles; applies at user-creation time only.
+     */
+    skipDefaultGroupCreation?: boolean;
+    /**
+     * Whether this GROUP role requires per-member category assignment. When true, a member with no individual category grants sees NO categories instead of falling back to the role\'s set, so an unassigned member fails closed. Only valid on group roles.
+     */
+    requiresIndividualCategoryGrants?: boolean;
+    /**
+     * Tag counterpart of requiresIndividualCategoryGrants. Only valid on group roles.
+     */
+    requiresIndividualTagGrants?: boolean;
+    /**
+     * Whether members of this GROUP role must keep at least one comment on the group\'s receipts. Only valid on group roles.
+     */
+    requireReceiptComment?: boolean;
+    /**
+     * Whether members of this GROUP role must keep at least one image on the group\'s receipts. Only valid on group roles.
+     */
+    requireReceiptImage?: boolean;
+    /**
      * Per-template action grants for a GROUP role, restricting which report templates its members may act on. Only valid on group roles; omit or leave empty for unrestricted access.
      */
     reportTemplateGrants?: Array<ReportTemplateGrant>;

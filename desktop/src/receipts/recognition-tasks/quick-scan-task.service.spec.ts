@@ -14,7 +14,7 @@ describe("QuickScanTaskService", () => {
   let http: HttpTestingController;
   let store: Store;
   const file = () => new File(["data"], "invoice.png", { type: "image/png" });
-  const submission = () => ({ file: file(), groupId: 2, categoryIds: [10], tagIds: [20] });
+  const submission = () => ({ file: file(), groupId: 2, categoryIds: [10], tagIds: [20], comment: "Client dinner" });
   const count = (): TestRequest => http.expectOne(request => request.method === "GET" && request.params.get("pageSize") === "1" && request.params.get("bucket") === "active");
   const page = (): TestRequest => http.expectOne(request => request.method === "GET" && request.params.get("pageSize") === "25");
 
@@ -46,6 +46,7 @@ describe("QuickScanTaskService", () => {
     const registrations = http.match(request => request.method === "POST");
     expect(registrations).toHaveLength(2);
     expect(registrations[0].request.body.categoryIds).toEqual([10]);
+    expect(registrations[0].request.body.comment).toBe("Client dinner");
     registrations[0].flush(testTask({ clientRequestId: ids[0] }));
     registrations[1].flush(testTask({ id: 2, clientRequestId: ids[1] }));
     const upload = http.expectOne("/api/recognitionTask/1/file");
@@ -148,7 +149,7 @@ describe("QuickScanTaskService", () => {
     http.expectOne(request => request.params.get("clientRequestId") === id).flush(testPage());
     const local = service.state().local[id];
     expect(local).toMatchObject({
-      reselectRequired: true, fileName: "invoice.png", groupId: 2, categoryIds: [10], tagIds: [20],
+      reselectRequired: true, fileName: "invoice.png", groupId: 2, categoryIds: [10], tagIds: [20], comment: "Client dinner",
     });
     expect(localStorage.getItem("receipt-wrangler-pending-scans-1")).toBeNull();
     expect(localStorage.getItem("receipt-wrangler-quick-scan-submissions-1")).toBeNull();
@@ -157,7 +158,7 @@ describe("QuickScanTaskService", () => {
     http.expectOne(request => request.params.get("clientRequestId") === id).flush(testPage());
     const registration = http.expectOne(request => request.method === "POST");
     expect(registration.request.body).toMatchObject({
-      clientRequestId: id, fileName: "invoice.png", groupId: 2, categoryIds: [10], tagIds: [20],
+      clientRequestId: id, fileName: "invoice.png", groupId: 2, categoryIds: [10], tagIds: [20], comment: "Client dinner",
     });
     registration.flush(testTask({ clientRequestId: id, canUpload: true }));
     http.expectOne("/api/recognitionTask/1/file").flush(testTask({ clientRequestId: id, status: "QUEUED", canUpload: false }));

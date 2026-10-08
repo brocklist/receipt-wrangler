@@ -8,19 +8,22 @@ import 'package:receipt_wrangler_mobile/interfaces/upload_multipart_file_data.da
 
 class QuickScanImage extends UploadMultipartFileData {
   QuickScanImage(
-      {required this.multipartFile,
-      required this.bytes,
+      {required MultipartFile multipartFile,
+      required Uint8List bytes,
       required this.formKey,
       this.groupId,
       this.paidByUserId,
       this.status,
       this.categories = const [],
-      this.tags = const []})
+      this.tags = const [],
+      this.comment})
       : super(multipartFile: multipartFile, bytes: bytes);
 
-  final MultipartFile multipartFile;
-
-  final Uint8List bytes;
+  // `multipartFile` and `bytes` deliberately are NOT redeclared here. They used
+  // to be, shadowing the superclass fields -- both copies held the same object
+  // (the constructor forwards to `super`), so it worked, but any getter added to
+  // the base class reads the base field while subclass code reads the shadow.
+  // `UploadMultipartFileData.filename` is exactly such a getter.
 
   final GlobalKey<FormBuilderState> formKey;
 
@@ -33,6 +36,8 @@ class QuickScanImage extends UploadMultipartFileData {
   List<Category> categories;
 
   List<Tag> tags;
+
+  String? comment;
 
   static QuickScanImage fromUploadMultipartFileData(
       UploadMultipartFileData data,

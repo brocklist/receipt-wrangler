@@ -272,6 +272,33 @@ func (service GroupService) DeleteGroup(groupId string, allowAllGroupDelete bool
 			return txErr
 		}
 
+		// Delete the members' per-member category/tag grants. The membership delete
+		// above is raw, so these do not cascade; orphaned rows would be re-adopted if
+		// the group id were ever reused.
+		txErr = repositories.DeleteMemberGrantsForGroup(tx, uintGroupId)
+		if txErr != nil {
+			return txErr
+		}
+
+		// Delete the group's default custom field selection and its receipt summary configuration.
+		// The receipt-settings delete below uses Select(clause.Associations), which cannot reach
+		// any of these rows: the projections they back are `gorm:"-"`, so the joins are not
+		// associations of the settings model at all.
+		txErr = tx.Where("group_id = ?", groupId).Delete(&models.GroupReceiptSettingsCustomField{}).Error
+		if txErr != nil {
+			return txErr
+		}
+
+		txErr = tx.Where("group_id = ?", groupId).Delete(&models.GroupReceiptSettingsSummaryCustomField{}).Error
+		if txErr != nil {
+			return txErr
+		}
+
+		txErr = tx.Where("group_id = ?", groupId).Delete(&models.GroupReceiptSettingsSummaryStatus{}).Error
+		if txErr != nil {
+			return txErr
+		}
+
 		// Unset user preferences
 		tx.Model(models.UserPrefernces{}).Where("quick_scan_default_group_id = ?", groupId).Update("quick_scan_default_group_id", nil)
 

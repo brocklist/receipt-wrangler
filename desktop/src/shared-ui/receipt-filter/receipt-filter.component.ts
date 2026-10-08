@@ -1,15 +1,14 @@
 import { Component, Input, OnInit, TemplateRef, input, output } from "@angular/core";
-import { FormControl, FormGroup, } from "@angular/forms";
+import { FormGroup, } from "@angular/forms";
 import { MatDialogRef } from "@angular/material/dialog";
 import { Store } from "@ngxs/store";
-import { endOfDay, startOfMonth } from "date-fns";
 import { take, tap } from "rxjs";
-import { RECEIPT_STATUS_OPTIONS } from "src/constants";
+import { RECEIPT_FILTER_FIELDS, RECEIPT_STATUS_OPTIONS } from "src/constants";
 import { SetReceiptFilter } from "src/store/receipt-table.actions";
+import { setupAutoOperationSelection } from "src/utils/filter-form";
 import { FormCommand } from "../../form/index";
-import { Category, FilterOperation, Tag } from "../../open-api";
+import { Category, Tag } from "../../open-api";
 import { GroupState } from "../../store";
-import { OperationsPipe } from "./operations.pipe";
 
 @Component({
   selector: "app-receipt-filter",
@@ -56,22 +55,16 @@ export class ReceiptFilterComponent implements OnInit {
   // set for the group filter.
   public groups = this.store.selectSignal(GroupState.groupsWithoutAll);
 
-  public startOfMonthFormControl = new FormControl(startOfMonth(new Date()));
-
-  public endOfTodayFormControl = new FormControl(endOfDay(new Date()));
-
-  private operationsPipe = new OperationsPipe();
-
   constructor(
     private store: Store,
     private dialogRef: MatDialogRef<ReceiptFilterComponent>
   ) {}
 
   public ngOnInit(): void {
-    this.startOfMonthFormControl.disable();
-    this.endOfTodayFormControl.disable();
-
-    this.setupAutoOperationSelection();
+    // RECEIPT_FILTER_FIELDS is the shared definition of every filter field's
+    // label and operation type, so these rows and the filter chips that describe
+    // them cannot drift apart.
+    setupAutoOperationSelection(this.parentForm, this.basePath, RECEIPT_FILTER_FIELDS);
   }
 
   public resetFilter(): void {
@@ -122,62 +115,4 @@ export class ReceiptFilterComponent implements OnInit {
   public cancelButtonClicked(): void {
     this.dialogRef.close(false);
   }
-
-  private setupAutoOperationSelection(): void {
-    // List of all filter fields
-    const fieldsToWatch = [
-      { fieldName: "date", type: "date" },
-      { fieldName: "name", type: "text" },
-      { fieldName: "paidBy", type: "users" },
-      { fieldName: "amount", type: "number" },
-      { fieldName: "categories", type: "list" },
-      { fieldName: "tags", type: "list" },
-      { fieldName: "status", type: "list" },
-      { fieldName: "group", type: "list" },
-      { fieldName: "resolvedDate", type: "date" },
-      { fieldName: "createdAt", type: "date" }
-    ];
-
-    fieldsToWatch.forEach(({ fieldName, type }) => {
-      const valueControl = this.parentForm.get(`${this.basePath}${fieldName}.value`);
-      const operationControl = this.parentForm.get(`${this.basePath}${fieldName}.operation`);
-
-      if (valueControl && operationControl) {
-        valueControl.valueChanges.subscribe(value => {
-          const hasValue = this.hasFieldValue(value, type);
-
-          if (hasValue) {
-            // Set first operation if none is selected
-            if (!operationControl.value) {
-              const operations = this.operationsPipe.transform(type, false);
-              if (operations.length > 0) {
-                operationControl.setValue(operations[0]);
-              }
-            }
-          } else {
-            // Clear operation if field is empty
-            operationControl.setValue(null);
-          }
-        });
-      }
-    });
-  }
-
-  private hasFieldValue(value: any, type: string): boolean {
-    if (value === null || value === undefined) {
-      return false;
-    }
-
-    if (type === "list" || type === "users") {
-      return Array.isArray(value) && value.length > 0;
-    }
-
-    if (typeof value === "string") {
-      return value.trim().length > 0;
-    }
-
-    return value !== "";
-  }
-
-  protected readonly FilterOperation = FilterOperation;
 }

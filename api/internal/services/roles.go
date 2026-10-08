@@ -49,22 +49,23 @@ func (service RoleService) CreateRole(command commands.UpsertRoleCommand) (struc
 		roleRepository := repositories.NewRoleRepository(tx)
 
 		if command.Scope == permissions.ScopeApp {
-			role, txErr := roleRepository.CreateAppRole(command.Name, command.Description, perms)
+			role, txErr := roleRepository.CreateAppRole(command.Name, command.Description, perms, command.SkipDefaultGroupCreation)
 			if txErr != nil {
 				return txErr
 			}
 
 			roleView = structs.RoleView{
-				Id:                   role.ID,
-				Name:                 role.Name,
-				Description:          role.Description,
-				Scope:                permissions.ScopeApp,
-				IsSystem:             role.IsSystem,
-				Permissions:          perms,
-				CategoryGrants:       []uint{},
-				TagGrants:            []uint{},
-				PaidByUserGrants:     []uint{},
-				ReportTemplateGrants: []structs.ReportTemplateGrantView{},
+				Id:                       role.ID,
+				Name:                     role.Name,
+				Description:              role.Description,
+				Scope:                    permissions.ScopeApp,
+				IsSystem:                 role.IsSystem,
+				Permissions:              perms,
+				SkipDefaultGroupCreation: role.SkipDefaultGroupCreation,
+				CategoryGrants:           []uint{},
+				TagGrants:                []uint{},
+				PaidByUserGrants:         []uint{},
+				ReportTemplateGrants:     []structs.ReportTemplateGrantView{},
 			}
 
 			return nil
@@ -74,7 +75,7 @@ func (service RoleService) CreateRole(command commands.UpsertRoleCommand) (struc
 			return txErr
 		}
 
-		role, txErr := roleRepository.CreateGroupRole(command.Name, command.Description, perms, categoryGrants, tagGrants, paidByUserGrants, command.IncludeOwnPaidReceipts)
+		role, txErr := roleRepository.CreateGroupRole(command.Name, command.Description, perms, categoryGrants, tagGrants, paidByUserGrants, command.IncludeOwnPaidReceipts, command.SeesAllMembers)
 		if txErr != nil {
 			return txErr
 		}
@@ -83,18 +84,39 @@ func (service RoleService) CreateRole(command commands.UpsertRoleCommand) (struc
 			return txErr
 		}
 
+		if txErr := roleRepository.SetGroupRoleIndividualGrantConfig(
+			role.ID,
+			command.RequiresIndividualCategoryGrants,
+			command.RequiresIndividualTagGrants,
+		); txErr != nil {
+			return txErr
+		}
+
+		if txErr := roleRepository.SetGroupRoleReceiptRequirements(
+			role.ID,
+			command.RequireReceiptComment,
+			command.RequireReceiptImage,
+		); txErr != nil {
+			return txErr
+		}
+
 		roleView = structs.RoleView{
-			Id:                     role.ID,
-			Name:                   role.Name,
-			Description:            role.Description,
-			Scope:                  permissions.ScopeGroup,
-			IsSystem:               role.IsSystem,
-			Permissions:            perms,
-			CategoryGrants:         categoryGrants,
-			TagGrants:              tagGrants,
-			PaidByUserGrants:       paidByUserGrants,
-			IncludeOwnPaidReceipts: command.IncludeOwnPaidReceipts,
-			ReportTemplateGrants:   reportTemplateGrantsToView(reportTemplateGrants),
+			Id:                               role.ID,
+			Name:                             role.Name,
+			Description:                      role.Description,
+			Scope:                            permissions.ScopeGroup,
+			IsSystem:                         role.IsSystem,
+			Permissions:                      perms,
+			CategoryGrants:                   categoryGrants,
+			TagGrants:                        tagGrants,
+			PaidByUserGrants:                 paidByUserGrants,
+			IncludeOwnPaidReceipts:           command.IncludeOwnPaidReceipts,
+			SeesAllMembers:                   command.SeesAllMembers,
+			RequiresIndividualCategoryGrants: command.RequiresIndividualCategoryGrants,
+			RequiresIndividualTagGrants:      command.RequiresIndividualTagGrants,
+			RequireReceiptComment:            command.RequireReceiptComment,
+			RequireReceiptImage:              command.RequireReceiptImage,
+			ReportTemplateGrants:             reportTemplateGrantsToView(reportTemplateGrants),
 		}
 
 		return nil
@@ -133,23 +155,24 @@ func (service RoleService) UpdateRole(id uint, command commands.UpsertRoleComman
 				return ErrSystemRoleImmutable
 			}
 
-			role, txErr := roleRepository.UpdateAppRole(id, command.Name, command.Description, perms)
+			role, txErr := roleRepository.UpdateAppRole(id, command.Name, command.Description, perms, command.SkipDefaultGroupCreation)
 			if txErr != nil {
 				return txErr
 			}
 
 			roleView = structs.RoleView{
-				Id:                   role.ID,
-				Name:                 role.Name,
-				Description:          role.Description,
-				Scope:                permissions.ScopeApp,
-				IsDefault:            role.IsDefault,
-				IsSystem:             role.IsSystem,
-				Permissions:          perms,
-				CategoryGrants:       []uint{},
-				TagGrants:            []uint{},
-				PaidByUserGrants:     []uint{},
-				ReportTemplateGrants: []structs.ReportTemplateGrantView{},
+				Id:                       role.ID,
+				Name:                     role.Name,
+				Description:              role.Description,
+				Scope:                    permissions.ScopeApp,
+				IsDefault:                role.IsDefault,
+				IsSystem:                 role.IsSystem,
+				Permissions:              perms,
+				SkipDefaultGroupCreation: role.SkipDefaultGroupCreation,
+				CategoryGrants:           []uint{},
+				TagGrants:                []uint{},
+				PaidByUserGrants:         []uint{},
+				ReportTemplateGrants:     []structs.ReportTemplateGrantView{},
 			}
 
 			return nil
@@ -170,7 +193,7 @@ func (service RoleService) UpdateRole(id uint, command commands.UpsertRoleComman
 			return txErr
 		}
 
-		role, txErr := roleRepository.UpdateGroupRole(id, command.Name, command.Description, perms, categoryGrants, tagGrants, paidByUserGrants, command.IncludeOwnPaidReceipts)
+		role, txErr := roleRepository.UpdateGroupRole(id, command.Name, command.Description, perms, categoryGrants, tagGrants, paidByUserGrants, command.IncludeOwnPaidReceipts, command.SeesAllMembers)
 		if txErr != nil {
 			return txErr
 		}
@@ -179,19 +202,40 @@ func (service RoleService) UpdateRole(id uint, command commands.UpsertRoleComman
 			return txErr
 		}
 
+		if txErr := roleRepository.SetGroupRoleIndividualGrantConfig(
+			id,
+			command.RequiresIndividualCategoryGrants,
+			command.RequiresIndividualTagGrants,
+		); txErr != nil {
+			return txErr
+		}
+
+		if txErr := roleRepository.SetGroupRoleReceiptRequirements(
+			id,
+			command.RequireReceiptComment,
+			command.RequireReceiptImage,
+		); txErr != nil {
+			return txErr
+		}
+
 		roleView = structs.RoleView{
-			Id:                     role.ID,
-			Name:                   role.Name,
-			Description:            role.Description,
-			Scope:                  permissions.ScopeGroup,
-			IsDefault:              role.IsDefault,
-			IsSystem:               role.IsSystem,
-			Permissions:            perms,
-			CategoryGrants:         categoryGrants,
-			TagGrants:              tagGrants,
-			PaidByUserGrants:       paidByUserGrants,
-			IncludeOwnPaidReceipts: command.IncludeOwnPaidReceipts,
-			ReportTemplateGrants:   reportTemplateGrantsToView(reportTemplateGrants),
+			Id:                               role.ID,
+			Name:                             role.Name,
+			Description:                      role.Description,
+			Scope:                            permissions.ScopeGroup,
+			IsDefault:                        role.IsDefault,
+			IsSystem:                         role.IsSystem,
+			Permissions:                      perms,
+			CategoryGrants:                   categoryGrants,
+			TagGrants:                        tagGrants,
+			PaidByUserGrants:                 paidByUserGrants,
+			IncludeOwnPaidReceipts:           command.IncludeOwnPaidReceipts,
+			SeesAllMembers:                   command.SeesAllMembers,
+			RequiresIndividualCategoryGrants: command.RequiresIndividualCategoryGrants,
+			RequiresIndividualTagGrants:      command.RequiresIndividualTagGrants,
+			RequireReceiptComment:            command.RequireReceiptComment,
+			RequireReceiptImage:              command.RequireReceiptImage,
+			ReportTemplateGrants:             reportTemplateGrantsToView(reportTemplateGrants),
 		}
 
 		return nil
@@ -476,17 +520,18 @@ func appRoleToView(role models.AppRole, isDefault bool) structs.RoleView {
 	}
 
 	return structs.RoleView{
-		Id:                   role.ID,
-		Name:                 role.Name,
-		Description:          role.Description,
-		Scope:                permissions.ScopeApp,
-		IsDefault:            isDefault,
-		IsSystem:             role.IsSystem,
-		Permissions:          perms,
-		CategoryGrants:       []uint{},
-		TagGrants:            []uint{},
-		PaidByUserGrants:     []uint{},
-		ReportTemplateGrants: []structs.ReportTemplateGrantView{},
+		Id:                       role.ID,
+		Name:                     role.Name,
+		Description:              role.Description,
+		Scope:                    permissions.ScopeApp,
+		IsDefault:                isDefault,
+		IsSystem:                 role.IsSystem,
+		Permissions:              perms,
+		SkipDefaultGroupCreation: role.SkipDefaultGroupCreation,
+		CategoryGrants:           []uint{},
+		TagGrants:                []uint{},
+		PaidByUserGrants:         []uint{},
+		ReportTemplateGrants:     []structs.ReportTemplateGrantView{},
 	}
 }
 
@@ -515,17 +560,22 @@ func groupRoleToView(role models.GroupRoleDefinition, isDefault bool) structs.Ro
 	}
 
 	return structs.RoleView{
-		Id:                     role.ID,
-		Name:                   role.Name,
-		Description:            role.Description,
-		Scope:                  permissions.ScopeGroup,
-		IsDefault:              isDefault,
-		IsSystem:               role.IsSystem,
-		Permissions:            perms,
-		CategoryGrants:         categoryGrants,
-		TagGrants:              tagGrants,
-		PaidByUserGrants:       paidByUserGrants,
-		IncludeOwnPaidReceipts: role.IncludeOwnPaidReceipts,
-		ReportTemplateGrants:   repositories.ReportTemplateGrantsFromRole(role),
+		Id:                               role.ID,
+		Name:                             role.Name,
+		Description:                      role.Description,
+		Scope:                            permissions.ScopeGroup,
+		IsDefault:                        isDefault,
+		IsSystem:                         role.IsSystem,
+		Permissions:                      perms,
+		CategoryGrants:                   categoryGrants,
+		TagGrants:                        tagGrants,
+		PaidByUserGrants:                 paidByUserGrants,
+		IncludeOwnPaidReceipts:           role.IncludeOwnPaidReceipts,
+		SeesAllMembers:                   role.SeesAllMembers,
+		RequiresIndividualCategoryGrants: role.RequiresIndividualCategoryGrants,
+		RequiresIndividualTagGrants:      role.RequiresIndividualTagGrants,
+		RequireReceiptComment:            role.RequireReceiptComment,
+		RequireReceiptImage:              role.RequireReceiptImage,
+		ReportTemplateGrants:             repositories.ReportTemplateGrantsFromRole(role),
 	}
 }

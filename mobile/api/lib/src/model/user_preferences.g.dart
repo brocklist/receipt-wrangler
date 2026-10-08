@@ -12,7 +12,7 @@ class _$UserPreferences extends UserPreferences {
   @override
   final BuiltList<UserShortcut>? userShortcuts;
   @override
-  final bool? showLargeImagePreviews;
+  final bool? closeChipSelectOnSelect;
   @override
   final int userId;
   @override
@@ -36,7 +36,7 @@ class _$UserPreferences extends UserPreferences {
   _$UserPreferences._(
       {this.quickScanDefaultStatus,
       this.userShortcuts,
-      this.showLargeImagePreviews,
+      this.closeChipSelectOnSelect,
       required this.userId,
       this.quickScanDefaultGroupId,
       this.quickScanDefaultPaidById,
@@ -59,7 +59,7 @@ class _$UserPreferences extends UserPreferences {
     return other is UserPreferences &&
         quickScanDefaultStatus == other.quickScanDefaultStatus &&
         userShortcuts == other.userShortcuts &&
-        showLargeImagePreviews == other.showLargeImagePreviews &&
+        closeChipSelectOnSelect == other.closeChipSelectOnSelect &&
         userId == other.userId &&
         quickScanDefaultGroupId == other.quickScanDefaultGroupId &&
         quickScanDefaultPaidById == other.quickScanDefaultPaidById &&
@@ -75,7 +75,7 @@ class _$UserPreferences extends UserPreferences {
     var _$hash = 0;
     _$hash = $jc(_$hash, quickScanDefaultStatus.hashCode);
     _$hash = $jc(_$hash, userShortcuts.hashCode);
-    _$hash = $jc(_$hash, showLargeImagePreviews.hashCode);
+    _$hash = $jc(_$hash, closeChipSelectOnSelect.hashCode);
     _$hash = $jc(_$hash, userId.hashCode);
     _$hash = $jc(_$hash, quickScanDefaultGroupId.hashCode);
     _$hash = $jc(_$hash, quickScanDefaultPaidById.hashCode);
@@ -93,7 +93,7 @@ class _$UserPreferences extends UserPreferences {
     return (newBuiltValueToStringHelper(r'UserPreferences')
           ..add('quickScanDefaultStatus', quickScanDefaultStatus)
           ..add('userShortcuts', userShortcuts)
-          ..add('showLargeImagePreviews', showLargeImagePreviews)
+          ..add('closeChipSelectOnSelect', closeChipSelectOnSelect)
           ..add('userId', userId)
           ..add('quickScanDefaultGroupId', quickScanDefaultGroupId)
           ..add('quickScanDefaultPaidById', quickScanDefaultPaidById)
@@ -123,10 +123,10 @@ class UserPreferencesBuilder
   set userShortcuts(covariant ListBuilder<UserShortcut>? userShortcuts) =>
       _$this._userShortcuts = userShortcuts;
 
-  bool? _showLargeImagePreviews;
-  bool? get showLargeImagePreviews => _$this._showLargeImagePreviews;
-  set showLargeImagePreviews(covariant bool? showLargeImagePreviews) =>
-      _$this._showLargeImagePreviews = showLargeImagePreviews;
+  bool? _closeChipSelectOnSelect;
+  bool? get closeChipSelectOnSelect => _$this._closeChipSelectOnSelect;
+  set closeChipSelectOnSelect(covariant bool? closeChipSelectOnSelect) =>
+      _$this._closeChipSelectOnSelect = closeChipSelectOnSelect;
 
   int? _userId;
   int? get userId => _$this._userId;
@@ -172,7 +172,7 @@ class UserPreferencesBuilder
     if ($v != null) {
       _quickScanDefaultStatus = $v.quickScanDefaultStatus;
       _userShortcuts = $v.userShortcuts?.toBuilder();
-      _showLargeImagePreviews = $v.showLargeImagePreviews;
+      _closeChipSelectOnSelect = $v.closeChipSelectOnSelect;
       _userId = $v.userId;
       _quickScanDefaultGroupId = $v.quickScanDefaultGroupId;
       _quickScanDefaultPaidById = $v.quickScanDefaultPaidById;
@@ -206,7 +206,7 @@ class UserPreferencesBuilder
           _$UserPreferences._(
             quickScanDefaultStatus: quickScanDefaultStatus,
             userShortcuts: _userShortcuts?.build(),
-            showLargeImagePreviews: showLargeImagePreviews,
+            closeChipSelectOnSelect: closeChipSelectOnSelect,
             userId: BuiltValueNullFieldError.checkNotNull(
                 userId, r'UserPreferences', 'userId'),
             quickScanDefaultGroupId: quickScanDefaultGroupId,

@@ -76,7 +76,9 @@ Future<void> storeAppData(
   systemSettingsModel.setCurrencyHideDecimalPlaces(
       appData?.currencyHideDecimalPlaces ?? false);
   permissionsModel.setPermissions(
-      appData.appPermissions, appData.groupPermissions);
+      appData.appPermissions, appData.groupPermissions.toMap());
+  permissionsModel
+      .setReceiptRequirements(appData.groupReceiptRequirements?.toMap());
 }
 
 /// Converts an AppData per-group catalog (`groupCategories` / `groupTags`,

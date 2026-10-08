@@ -1,5 +1,16 @@
 <div class="d-flex">
-  <mat-form-field [appearance]="appearance()" class="w-100">
+  <!--
+    A hinted field sizes its subscript dynamically. Material's default "fixed"
+    reserves a single line and positions the hint wrapper absolutely, so a hint
+    that wraps overflows and paints over whatever follows the field. Fields with
+    no hint keep "fixed", so the error row stays reserved and they do not jump
+    when a mat-error appears.
+  -->
+  <mat-form-field
+    class="w-100"
+    [appearance]="appearance()"
+    [subscriptSizing]="hint ? 'dynamic' : 'fixed'"
+  >
     <mat-label>{{ label }}</mat-label>
     <div class="d-flex align-items-center">
       <input
@@ -22,12 +33,26 @@
         err.message
       }}
     </mat-error>
-    <div matSuffix *ngIf="showVisibilityEye">
+    <div matSuffix *ngIf="showVisibilityEye || showGeneratePassword">
+      <button
+        *ngIf="showGeneratePassword"
+        class="generate-password-button"
+        mat-icon-button
+        type="button"
+        data-testid="password-generate"
+        aria-label="Generate password"
+        matTooltip="Generate password"
+        [disabled]="inputFormControl.disabled || readonly"
+        (click)="generatePassword()"
+      >
+        <mat-icon>autorenew</mat-icon>
+      </button>
       <button
         *ngIf="showVisibilityEye"
         class="visibility-eye-button"
         mat-icon-button
         type="button"
+        data-testid="password-visibility-toggle"
         [matTooltip]="type === 'password' ? 'Show ' + label : 'Hide ' + label"
         (click)="toggleVisibility()"
       >

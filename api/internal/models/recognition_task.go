@@ -62,6 +62,7 @@ type RecognitionTask struct {
 	ReceiptStatus    ReceiptStatus         `json:"-"`
 	CategoryIds      []uint                `gorm:"serializer:json" json:"-"`
 	TagIds           []uint                `gorm:"serializer:json" json:"-"`
+	Comment          string                `gorm:"type:varchar(500)" json:"-"`
 }
 
 func RecognitionActiveStatuses() []RecognitionTaskStatus {

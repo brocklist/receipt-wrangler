@@ -1,4 +1,5 @@
 import { format } from "date-fns";
+import { ReceiptDateFilterFieldKey } from "src/constants";
 import {
   ReceiptPagedRequestFilter,
   ReportColumn,
@@ -22,6 +23,16 @@ export interface ReportColumnValue {
   expr?: string;
 }
 
+/**
+ * One grouping level. `field` is the engine field key the report nests by;
+ * `label` is a heading override for the leading column that level renders as,
+ * blank when the field catalog's own label should be used.
+ */
+export interface ReportGroupByValue {
+  field: string;
+  label: string;
+}
+
 /** The builder form's resolved value, shaped for mapping to a request command. */
 export interface ReportBuilderValue {
   name: string;
@@ -30,9 +41,12 @@ export interface ReportBuilderValue {
     preset: ReportPeriod.PresetEnum;
     startDate: Date | null;
     endDate: Date | null;
+    // One of the receipts quick date filter's keys, the only values the picker
+    // offers. The contract types it as a plain string (see swagger.yml).
+    dateField: ReceiptDateFilterFieldKey;
   };
   filter: ReceiptPagedRequestFilter;
-  groupBy: string[];
+  groupBy: ReportGroupByValue[];
   detail: { mode: ReportDetail.ModeEnum; by: string };
   columns: ReportColumnValue[];
   subtotals: boolean;
@@ -64,8 +78,9 @@ export function isDimensionColumnDisabled(
 
 /** The columns actually sent to the engine — every column minus the disabled ones. */
 export function enabledReportColumns(value: ReportBuilderValue): ReportColumnValue[] {
+  const groupByFields = value.groupBy.map((level) => level.field);
   return value.columns.filter(
-    (column) => !isDimensionColumnDisabled(column, value.detail.mode, value.detail.by, value.groupBy)
+    (column) => !isDimensionColumnDisabled(column, value.detail.mode, value.detail.by, groupByFields)
   );
 }
 
@@ -74,15 +89,20 @@ function toApiDate(date: Date | null): string {
   return date ? format(date, "yyyy-MM-dd") : "";
 }
 
+/**
+ * The date field is always sent, so a saved template records which date it covers
+ * instead of leaning on the API's receipt-date default.
+ */
 function toPeriod(period: ReportBuilderValue["period"]): ReportPeriod {
   if (period.preset === ReportPeriod.PresetEnum.Custom) {
     return {
       preset: period.preset,
       startDate: toApiDate(period.startDate),
       endDate: toApiDate(period.endDate),
+      dateField: period.dateField,
     };
   }
-  return { preset: period.preset };
+  return { preset: period.preset, dateField: period.dateField };
 }
 
 /** Maps a builder column to an engine column, carrying only the fields its kind uses. */
@@ -134,7 +154,7 @@ function mapReportCommand(value: ReportBuilderValue, columns: ReportColumnValue[
     groupIds: value.scope,
     period: toPeriod(value.period),
     filter: value.filter,
-    groupBy: value.groupBy,
+    groupBy: value.groupBy.map((level) => level.field),
     detail,
     columns: columns.map(toColumn),
     subtotals: value.subtotals,
@@ -142,12 +162,35 @@ function mapReportCommand(value: ReportBuilderValue, columns: ReportColumnValue[
     formats: toFormats(value.formats),
   };
 
+  const groupByLabels = toGroupByLabels(value.groupBy);
+  if (groupByLabels) {
+    command.groupByLabels = groupByLabels;
+  }
+
   const { title, intro, footer } = value.document;
   if (title || intro || footer) {
     command.document = { title, intro, footer };
   }
 
   return command;
+}
+
+/**
+ * The heading overrides for the grouping levels, keyed by field key, or
+ * undefined when no level is renamed — an untouched report must map to exactly
+ * the command it always did, so the key is omitted rather than sent empty.
+ */
+function toGroupByLabels(
+  levels: ReportGroupByValue[]
+): { [key: string]: string } | undefined {
+  const labels: { [key: string]: string } = {};
+  levels.forEach((level) => {
+    const label = (level.label ?? "").trim();
+    if (label) {
+      labels[level.field] = label;
+    }
+  });
+  return Object.keys(labels).length > 0 ? labels : undefined;
 }
 
 /**

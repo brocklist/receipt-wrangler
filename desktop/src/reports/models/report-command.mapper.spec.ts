@@ -1,3 +1,4 @@
+import { RECEIPT_DATE_FILTER_FIELDS } from "src/constants";
 import { ReportColumn, ReportDetail, ReportPeriod } from "../../open-api";
 import {
   enabledReportColumns,
@@ -11,9 +12,12 @@ function baseValue(): ReportBuilderValue {
   return {
     name: "My Report",
     scope: ["1", "2"],
-    period: { preset: ReportPeriod.PresetEnum.ThisMonth, startDate: null, endDate: null },
+    period: { preset: ReportPeriod.PresetEnum.ThisMonth, startDate: null, endDate: null, dateField: "date" },
     filter: {},
-    groupBy: ["group", "category"],
+    groupBy: [
+      { field: "group", label: "" },
+      { field: "category", label: "" },
+    ],
     detail: { mode: ReportDetail.ModeEnum.Aggregate, by: "category" },
     columns: [
       { id: "a", kind: ReportColumn.KindEnum.Dimension, name: "Category", label: "Category", field: "category" },
@@ -38,9 +42,36 @@ describe("toReportRequestCommand", () => {
     expect(command.grandTotals).toBe(false);
   });
 
+  it("omits groupByLabels when no grouping level is renamed", () => {
+    // An untouched report must map to exactly the command it always did, so the
+    // key is absent rather than an empty object.
+    const command = toReportRequestCommand(baseValue());
+    expect(command.groupByLabels).toBeUndefined();
+    expect("groupByLabels" in command).toBe(false);
+  });
+
+  it("emits groupByLabels for the renamed levels only, keyed by field", () => {
+    const value = baseValue();
+    value.groupBy = [
+      { field: "group", label: "" },
+      { field: "category", label: "  Expense Type  " },
+    ];
+    const command = toReportRequestCommand(value);
+    // Trimmed, and the untouched level contributes nothing.
+    expect(command.groupByLabels).toEqual({ category: "Expense Type" });
+    // The grouping order is still the plain field keys.
+    expect(command.groupBy).toEqual(["group", "category"]);
+  });
+
+  it("treats a whitespace-only label as no override", () => {
+    const value = baseValue();
+    value.groupBy = [{ field: "group", label: "   " }];
+    expect(toReportRequestCommand(value).groupByLabels).toBeUndefined();
+  });
+
   it("emits a preset period without dates", () => {
     const command = toReportRequestCommand(baseValue());
-    expect(command.period).toEqual({ preset: ReportPeriod.PresetEnum.ThisMonth });
+    expect(command.period).toEqual({ preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "date" });
   });
 
   it("emits a custom period with formatted YYYY-MM-DD dates", () => {
@@ -49,13 +80,33 @@ describe("toReportRequestCommand", () => {
       preset: ReportPeriod.PresetEnum.Custom,
       startDate: new Date(2026, 4, 1),
       endDate: new Date(2026, 4, 31),
+      dateField: "createdAt",
     };
     const command = toReportRequestCommand(value);
     expect(command.period).toEqual({
       preset: ReportPeriod.PresetEnum.Custom,
       startDate: "2026-05-01",
       endDate: "2026-05-31",
+      dateField: "createdAt",
     });
+  });
+
+  // The field is always sent, so a saved template records which date it covers
+  // rather than leaning on the API's receipt-date default.
+  it.each(
+    Object.values(ReportPeriod.PresetEnum).flatMap((preset) =>
+      RECEIPT_DATE_FILTER_FIELDS.map((field) => [preset, field.key] as const)
+    )
+  )("sends the chosen date field for a %s period on %s", (preset, dateField) => {
+    const value = baseValue();
+    value.period = {
+      preset,
+      startDate: new Date(2026, 4, 1),
+      endDate: new Date(2026, 4, 31),
+      dateField,
+    };
+    expect(toReportRequestCommand(value).period?.dateField).toBe(dateField);
+    expect(toReportRequestCommandForSave(value).period?.dateField).toBe(dateField);
   });
 
   it("orders formats csv, xlsx, pdf and drops the unselected", () => {
@@ -94,7 +145,7 @@ describe("toReportRequestCommand", () => {
     // The reported failing config: aggregate by tag, group by paid_by, but a
     // Category dimension column that reads neither -> it is left out of the spec.
     const value = baseValue();
-    value.groupBy = ["paid_by"];
+    value.groupBy = [{ field: "paid_by", label: "" }];
     value.detail = { mode: ReportDetail.ModeEnum.Aggregate, by: "tag" };
     value.columns = [
       { id: "cat", kind: ReportColumn.KindEnum.Dimension, name: "Category", label: "Category", field: "category" },
@@ -112,7 +163,7 @@ describe("toReportRequestCommandForSave", () => {
     // paid_by, plus a Category dimension that reads neither. The save mapper keeps
     // it (so it round-trips and self-heals) where the generate mapper drops it.
     const value = baseValue();
-    value.groupBy = ["paid_by"];
+    value.groupBy = [{ field: "paid_by", label: "" }];
     value.detail = { mode: ReportDetail.ModeEnum.Aggregate, by: "tag" };
     value.columns = [
       { id: "cat", kind: ReportColumn.KindEnum.Dimension, name: "Category", label: "Category", field: "category" },
@@ -160,7 +211,7 @@ describe("isDimensionColumnDisabled", () => {
   it("enabledReportColumns drops only the disabled dimension columns", () => {
     const value = {
       detail: { mode: Aggregate, by: "tag" },
-      groupBy: ["paid_by"],
+      groupBy: [{ field: "paid_by", label: "" }],
       columns: [dim("category"), dim("tag"), agg()],
     } as any as ReportBuilderValue;
     expect(enabledReportColumns(value).map((c) => c.field ?? c.name)).toEqual(["tag", "Y"]);

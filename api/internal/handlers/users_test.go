@@ -395,6 +395,96 @@ func assertOwed(t *testing.T, result map[uint]decimal.Decimal, otherUserId uint,
 	}
 }
 
+// setupIsolatedAmountOwedTest seeds group 1 as an isolated group where user 1 is
+// the (restricted) caller, user 3 is a visible supervisor, and user 2 is an
+// invisible peer.
+func setupIsolatedAmountOwedTest(t *testing.T) {
+	repositories.CreateTestGroupWithUsers()
+	grantGroupPerms(t, 1, 1, permissions.GroupReceiptsRead)
+	isolateGroupWithSupervisor(t, 1, 3)
+}
+
+// --- Member isolation ---------------------------------------------------
+
+func TestGetAmountOwedForUserIsolatedViewerExcludesInvisibleCounterparty(t *testing.T) {
+	defer tearDownUserTest()
+	setupIsolatedAmountOwedTest(t)
+
+	// User 2 (invisible peer) paid; item charged to user 1 -> entry for user 2.
+	createReceiptWithItems(t, "Peer paid", 10, 2, 1, []commands.UpsertItemCommand{
+		chargedItem("peer item", 10, 1),
+	})
+	// User 3 (visible supervisor) paid; item charged to user 1 -> entry for user 3.
+	createReceiptWithItems(t, "Supervisor paid", 15, 3, 1, []commands.UpsertItemCommand{
+		chargedItem("sup item", 15, 1),
+	})
+
+	w, result := callGetAmountOwed(1, "1", nil)
+	if w.Result().StatusCode != http.StatusOK {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusOK)
+		return
+	}
+
+	if _, exists := result[2]; exists {
+		t.Errorf("invisible counterparty (user 2) should be excluded from settlement, got %v", result)
+	}
+	assertOwed(t, result, 3, 15)
+}
+
+func TestGetAmountOwedForUserUnrestrictedViewerUnaffectedByIsolation(t *testing.T) {
+	defer tearDownUserTest()
+	setupIsolatedAmountOwedTest(t)
+
+	// Elevate the caller to an admin (app.users.read) -> unrestricted visibility,
+	// so isolation must not filter the settlement map.
+	grantAppPerms(t, 1, permissions.AppUsersRead)
+
+	createReceiptWithItems(t, "Peer paid", 10, 2, 1, []commands.UpsertItemCommand{
+		chargedItem("peer item", 10, 1),
+	})
+
+	w, result := callGetAmountOwed(1, "1", nil)
+	if w.Result().StatusCode != http.StatusOK {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusOK)
+		return
+	}
+
+	assertOwed(t, result, 2, 10)
+}
+
+// Cross-group settlement: a counterparty shared via an OPEN group still appears (for
+// that group's portion), while their contribution from an ISOLATED group where the
+// caller cannot see them is excluded. "Isolated means isolated" — the isolated portion
+// is dropped even though the caller knows the counterparty from the open group.
+func TestGetAmountOwedForUserCrossGroupExcludesIsolatedPortionKeepsOpen(t *testing.T) {
+	defer tearDownUserTest()
+	setupIsolatedAmountOwedTest(t) // group 1 isolated (sup=3); user 1 is the restricted caller
+
+	// User 1 and user 2 ALSO share the OPEN group 2; user 1 may read both groups.
+	grantGroupPerms(t, 1, 2, permissions.GroupReceiptsRead)
+	grantGroupPerms(t, 2, 2, permissions.GroupReceiptsRead)
+
+	// Isolated group 1: user 2 (invisible peer here) paid, item charged to user 1 ($10).
+	r1 := createReceiptWithItems(t, "Iso peer paid", 10, 2, 1, []commands.UpsertItemCommand{
+		chargedItem("iso item", 10, 1),
+	})
+	// Open group 2: user 2 (visible here) paid, item charged to user 1 ($15).
+	r2 := createReceiptWithItems(t, "Open peer paid", 15, 2, 2, []commands.UpsertItemCommand{
+		chargedItem("open item", 15, 1),
+	})
+
+	w, result := callGetAmountOwed(1, "", []string{
+		utils.UintToString(r1.ID), utils.UintToString(r2.ID),
+	})
+	if w.Result().StatusCode != http.StatusOK {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusOK)
+		return
+	}
+
+	// Only the open-group portion counts; the isolated-group portion is excluded.
+	assertOwed(t, result, 2, 15)
+}
+
 // --- A. Authorization ---------------------------------------------------
 
 func TestGetAmountOwedForUserReturnsForbiddenWhenCallerNotInGroup(t *testing.T) {
@@ -700,6 +790,9 @@ func TestGetAmountOwedForUserAllGroupAggregatesAcrossMemberships(t *testing.T) {
 	db := repositories.GetDB()
 	// Make user 1 a member of Group 2 as well so the all-group covers both groups.
 	db.Create(&models.GroupMember{GroupID: 2, UserID: 1})
+	// The all-group view now aggregates only groups the caller may actually read,
+	// so grant receipts.read in group 2 as well (group 1 is granted by the fixture).
+	grantGroupPerms(t, 1, 2, permissions.GroupReceiptsRead)
 
 	// CreateAllGroup makes a new group with IsAllGroup=true and adds user 1 as OWNER member.
 	groupRepository := repositories.NewGroupRepository(nil)
@@ -774,4 +867,148 @@ func TestGetAmountOwedForUserReceiptIdsCombinedWithGroupId(t *testing.T) {
 
 	assertOwed(t, result, 2, 10)
 	assertOwed(t, result, 4, 25)
+}
+
+func TestShouldNotAllowUserToGetPagedUsers(t *testing.T) {
+	defer tearDownUserTest()
+	reader := strings.NewReader("")
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api", reader)
+
+	newContext := context.WithValue(r.Context(), jwtmiddleware.ContextKey{}, &validator.ValidatedClaims{CustomClaims: &structs.Claims{UserId: 1}})
+	r = r.WithContext(newContext)
+
+	GetPagedUsers(w, r)
+
+	if w.Result().StatusCode != http.StatusForbidden {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestShouldNotGetPagedUsersWithBadRequest(t *testing.T) {
+	defer tearDownUserTest()
+
+	tests := map[string]struct {
+		input  commands.PagedRequestCommand
+		expect int
+	}{
+		"badOrderBy": {
+			input:  commands.PagedRequestCommand{Page: 1, PageSize: 50, OrderBy: "badOrderBy", SortDirection: "asc"},
+			expect: http.StatusInternalServerError,
+		},
+		"badSortDirection": {
+			input:  commands.PagedRequestCommand{Page: 1, PageSize: 50, OrderBy: "username", SortDirection: "badSortDirection"},
+			expect: http.StatusBadRequest,
+		},
+		"badPage": {
+			input:  commands.PagedRequestCommand{Page: -1, PageSize: 50, OrderBy: "username", SortDirection: "asc"},
+			expect: http.StatusBadRequest,
+		},
+		"badPageSize": {
+			input:  commands.PagedRequestCommand{Page: 1, PageSize: -2, OrderBy: "username", SortDirection: "asc"},
+			expect: http.StatusBadRequest,
+		},
+		"valid": {
+			input:  commands.PagedRequestCommand{Page: 1, PageSize: 25, OrderBy: "username", SortDirection: "asc"},
+			expect: http.StatusOK,
+		},
+	}
+
+	grantAllAppPerms(t, 1)
+
+	for name, test := range tests {
+		bytes, _ := json.Marshal(test.input)
+		reader := strings.NewReader(string(bytes))
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/api", reader)
+
+		newContext := context.WithValue(r.Context(), jwtmiddleware.ContextKey{}, &validator.ValidatedClaims{CustomClaims: &structs.Claims{UserId: 1}})
+		r = r.WithContext(newContext)
+
+		GetPagedUsers(w, r)
+
+		if w.Result().StatusCode != test.expect {
+			utils.PrintTestError(t, name+" status "+strconv.Itoa(w.Result().StatusCode), test.expect)
+		}
+	}
+}
+
+func TestShouldAllowAdminToGetPagedUsers(t *testing.T) {
+	defer tearDownUserTest()
+
+	// grantAllAppPerms creates user 1 with the admin role; add two more so the
+	// page returns a known, non-trivial set.
+	grantAllAppPerms(t, 1)
+	db := repositories.GetDB()
+	db.Create(&models.User{Username: "alpha", DisplayName: "alpha", Password: "password"})
+	db.Create(&models.User{Username: "beta", DisplayName: "beta", Password: "password"})
+
+	command := commands.PagedRequestCommand{Page: 1, PageSize: 25, OrderBy: "username", SortDirection: "asc"}
+	bytes, _ := json.Marshal(command)
+	reader := strings.NewReader(string(bytes))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api", reader)
+
+	newContext := context.WithValue(r.Context(), jwtmiddleware.ContextKey{}, &validator.ValidatedClaims{CustomClaims: &structs.Claims{UserId: 1}})
+	r = r.WithContext(newContext)
+
+	GetPagedUsers(w, r)
+
+	if w.Result().StatusCode != http.StatusOK {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusOK)
+		return
+	}
+
+	var pagedData structs.PagedData
+	if err := json.NewDecoder(w.Result().Body).Decode(&pagedData); err != nil {
+		utils.PrintTestError(t, err, "no error decoding paged data")
+		return
+	}
+
+	if pagedData.TotalCount != 3 {
+		utils.PrintTestError(t, pagedData.TotalCount, int64(3))
+	}
+	if len(pagedData.Data) != 3 {
+		utils.PrintTestError(t, len(pagedData.Data), 3)
+	}
+}
+
+// The all-group amount-owed view must NOT fold in a group the caller cannot read.
+// A member of a group with no receipts.read role there must not have that group's
+// settlement leak through "All". Regression guard for the All-group read gate.
+func TestGetAmountOwedForUserAllGroupExcludesUnreadableGroup(t *testing.T) {
+	defer tearDownUserTest()
+	setupAmountOwedTest(t)
+
+	db := repositories.GetDB()
+	// Member of group 2, but with NO group role (so no receipts.read there).
+	db.Create(&models.GroupMember{GroupID: 2, UserID: 1})
+
+	groupRepository := repositories.NewGroupRepository(nil)
+	allGroup, err := groupRepository.CreateAllGroup(1)
+	if err != nil {
+		t.Fatalf("failed to create all-group: %v", err)
+	}
+	grantGroupPerms(t, 1, allGroup.ID, permissions.GroupReceiptsRead)
+
+	// Group 1 (readable via fixture): caller owes user 2 $10.
+	createReceiptWithItems(t, "G1 receipt", 10, 2, 1, []commands.UpsertItemCommand{
+		chargedItem("g1 item", 10, 1),
+	})
+	// Group 2 (NOT readable): caller would owe user 4 $25 — must be excluded.
+	createReceiptWithItems(t, "G2 receipt", 25, 4, 2, []commands.UpsertItemCommand{
+		chargedItem("g2 item", 25, 1),
+	})
+
+	w, result := callGetAmountOwed(1, strconv.FormatUint(uint64(allGroup.ID), 10), nil)
+	if w.Result().StatusCode != http.StatusOK {
+		utils.PrintTestError(t, w.Result().StatusCode, http.StatusOK)
+		return
+	}
+
+	assertOwed(t, result, 2, 10)
+	// User 4's group-2 charge must NOT appear (group 2 is not readable).
+	if _, ok := result[4]; ok {
+		utils.PrintTestError(t, "group 2 (unreadable) leaked into all-group settlement", "excluded")
+	}
 }

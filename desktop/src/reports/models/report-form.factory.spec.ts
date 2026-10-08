@@ -2,10 +2,16 @@ import { Component, provideZonelessChangeDetection } from "@angular/core";
 import { TestBed } from "@angular/core/testing";
 import { FormArray, FormBuilder } from "@angular/forms";
 import { UntilDestroy } from "@ngneat/until-destroy";
+import { DEFAULT_QUICK_DATE_FIELD, RECEIPT_DATE_FILTER_FIELDS } from "src/constants";
 import { FilterOperation, ReportColumn, ReportDetail, ReportPeriod, ReportRequestCommand } from "../../open-api";
 import { buildReceiptFilterForm } from "../../utils/receipt-filter";
 import { ReportBuilderValue, toReportRequestCommand, toReportRequestCommandForSave } from "./report-command.mapper";
-import { buildReportFormFromCommand, readStringArray } from "./report-form.factory";
+import {
+  buildReportForm,
+  buildReportFormFromCommand,
+  readGroupByFields,
+  readStringArray,
+} from "./report-form.factory";
 
 // buildReceiptFilterForm wires untilDestroyed subscriptions, so it needs an
 // @UntilDestroy()-decorated context — a throwaway host, exactly as the receipt
@@ -42,7 +48,7 @@ describe("buildReportFormFromCommand", () => {
     const command: ReportRequestCommand = {
       name: "Quarterly Spend",
       groupIds: ["1", "2"],
-      period: { preset: ReportPeriod.PresetEnum.Qtd },
+      period: { preset: ReportPeriod.PresetEnum.Qtd, dateField: "createdAt" },
       filter: canonicalFilter({
         amount: { operation: FilterOperation.GreaterThan, value: 10 },
         name: { operation: FilterOperation.Contains, value: "coffee" },
@@ -72,7 +78,7 @@ describe("buildReportFormFromCommand", () => {
     const command: ReportRequestCommand = {
       name: "Has a disabled column",
       groupIds: ["1"],
-      period: { preset: ReportPeriod.PresetEnum.ThisMonth },
+      period: { preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "date" },
       filter: canonicalFilter({}),
       groupBy: ["paid_by"],
       detail: { mode: ReportDetail.ModeEnum.Aggregate, by: "tag" },
@@ -104,7 +110,12 @@ describe("buildReportFormFromCommand", () => {
     const command: ReportRequestCommand = {
       name: "Custom Range",
       groupIds: ["5"],
-      period: { preset: ReportPeriod.PresetEnum.Custom, startDate: "2026-05-01", endDate: "2026-05-31" },
+      period: {
+        preset: ReportPeriod.PresetEnum.Custom,
+        startDate: "2026-05-01",
+        endDate: "2026-05-31",
+        dateField: "resolvedDate",
+      },
       filter: canonicalFilter({
         amount: { operation: FilterOperation.Between, value: [5, 50] },
         tags: { operation: FilterOperation.Contains, value: [7] },
@@ -166,7 +177,7 @@ describe("buildReportFormFromCommand", () => {
     const form = buildReportFormFromCommand(fb, host, command);
     // Assert the array CONTENTS carried over, not just the lengths.
     expect(readStringArray(form.get("scope") as FormArray)).toEqual(["3", "4", "9"]);
-    expect(readStringArray(form.get("groupBy") as FormArray)).toEqual(["group", "status"]);
+    expect(readGroupByFields(form.get("groupBy") as FormArray)).toEqual(["group", "status"]);
 
     const columns = form.get("columns") as FormArray;
     expect(columns.length).toBe(2);
@@ -188,6 +199,50 @@ describe("buildReportFormFromCommand", () => {
     expect(form.get("columns.0.id")!.value).not.toBe(form.get("columns.1.id")!.value);
   });
 
+  it("hydrates a grouping level's column-heading override, and leaves the rest blank", () => {
+    const command: ReportRequestCommand = {
+      name: "Renamed",
+      groupIds: ["1"],
+      period: { preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "createdAt" },
+      filter: canonicalFilter({}),
+      groupBy: ["group", "category"],
+      groupByLabels: { category: "Expense Type" },
+      detail: { mode: ReportDetail.ModeEnum.Aggregate, by: "category" },
+      columns: [{ kind: ReportColumn.KindEnum.Aggregate, name: "Count", label: "Count", aggFunc: ReportColumn.AggFuncEnum.Count }],
+      subtotals: false,
+      grandTotals: false,
+      formats: [ReportRequestCommand.FormatsEnum.Csv],
+    };
+
+    const form = buildReportFormFromCommand(fb, host, command);
+    expect(readGroupByFields(form.get("groupBy") as FormArray)).toEqual(["group", "category"]);
+    // A level the stored config does not rename holds a blank label, which maps
+    // back to no override at all.
+    expect(form.get("groupBy.0.label")!.value).toBe("");
+    expect(form.get("groupBy.1.label")!.value).toBe("Expense Type");
+
+    expect(roundTrip(command)).toEqual(command);
+  });
+
+  it("round-trips a command with no groupByLabels without inventing the key", () => {
+    const command: ReportRequestCommand = {
+      name: "Untouched",
+      groupIds: ["1"],
+      period: { preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "date" },
+      filter: canonicalFilter({}),
+      groupBy: ["group"],
+      detail: { mode: ReportDetail.ModeEnum.Aggregate, by: "group" },
+      columns: [{ kind: ReportColumn.KindEnum.Aggregate, name: "Count", label: "Count", aggFunc: ReportColumn.AggFuncEnum.Count }],
+      subtotals: false,
+      grandTotals: false,
+      formats: [ReportRequestCommand.FormatsEnum.Csv],
+    };
+
+    const mapped = roundTrip(command);
+    expect(mapped).toEqual(command);
+    expect("groupByLabels" in mapped).toBe(false);
+  });
+
   // A saved filter can touch any receipt-filter field, over every editor type: text
   // (name), number BETWEEN (amount), date BETWEEN (date), users array (paidBy), and
   // list arrays (categories, tags, status). This is the surface the "filter doesn't
@@ -206,7 +261,7 @@ describe("buildReportFormFromCommand", () => {
     return {
       name: "Filtered",
       groupIds: ["1"],
-      period: { preset: ReportPeriod.PresetEnum.ThisMonth },
+      period: { preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "resolvedDate" },
       filter: canonicalFilter(filterSeed),
       groupBy: [],
       detail: { mode: ReportDetail.ModeEnum.Records },
@@ -257,5 +312,43 @@ describe("buildReportFormFromCommand", () => {
 
     const mixed = commandWithFilter({ paidBy: { operation: FilterOperation.Contains, value: [-1, 12] } });
     expect(roundTrip(mixed)).toEqual(mixed);
+  });
+
+  describe("period date field", () => {
+    function commandOnDateField(dateField?: string): ReportRequestCommand {
+      const command = commandWithFilter({});
+      command.period = { preset: ReportPeriod.PresetEnum.ThisMonth };
+      if (dateField !== undefined) {
+        command.period.dateField = dateField;
+      }
+      return command;
+    }
+
+    it("defaults a new report to the receipts table's quick date field", () => {
+      const form = buildReportForm(fb, host);
+      expect(form.get("period.dateField")!.value).toBe(DEFAULT_QUICK_DATE_FIELD);
+    });
+
+    it.each(RECEIPT_DATE_FILTER_FIELDS.map((field) => field.key))(
+      "rehydrates and round-trips a template covering %s",
+      (dateField) => {
+        const command = commandOnDateField(dateField);
+        expect(buildReportFormFromCommand(fb, host, command).get("period.dateField")!.value).toBe(dateField);
+        expect(roundTrip(command)).toEqual(command);
+      }
+    );
+
+    // A template saved before the picker existed always covered the receipt date.
+    // Re-saving it writes that down, so this is deliberately not a fixpoint.
+    it("rehydrates a template with no date field onto the receipt date", () => {
+      const legacy = commandOnDateField();
+      expect(buildReportFormFromCommand(fb, host, legacy).get("period.dateField")!.value).toBe("date");
+      expect(roundTrip(legacy).period).toEqual({ preset: ReportPeriod.PresetEnum.ThisMonth, dateField: "date" });
+    });
+
+    it("falls back to the receipt date for a stored field the picker does not offer", () => {
+      const form = buildReportFormFromCommand(fb, host, commandOnDateField("paidAt"));
+      expect(form.get("period.dateField")!.value).toBe("date");
+    });
   });
 });

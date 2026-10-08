@@ -2,7 +2,7 @@ import { TestBed } from "@angular/core/testing";
 import { NgxsModule, Store } from "@ngxs/store";
 import { Claims } from "../open-api";
 import { AuthState } from "./auth.state";
-import { Logout, SetAuthState, SetGroupCatalog, SetPermissions } from "./auth.state.actions";
+import { Logout, SetAuthState, SetGroupCatalog, SetPermissions, SetUserPreferences } from "./auth.state.actions";
 
 describe("AuthState", () => {
   let store: Store;
@@ -37,6 +37,52 @@ describe("AuthState", () => {
     expect(store.selectSnapshot(AuthState.hasGroupPermission(1, "group.view"))).toBe(false);
   });
 
+  describe("receiptRequirements", () => {
+    it("reflects the resolved requirements for a group", () => {
+      store.dispatch(
+        new SetPermissions(APP_PERMISSIONS, GROUP_PERMISSIONS, {
+          1: { commentRequired: true, imageRequired: false },
+        })
+      );
+
+      expect(store.selectSnapshot(AuthState.receiptRequirements(1))).toEqual({
+        commentRequired: true,
+        imageRequired: false,
+      });
+    });
+
+    it("defaults to nothing required for an absent group and when never set", () => {
+      expect(store.selectSnapshot(AuthState.receiptRequirements(1))).toEqual({
+        commentRequired: false,
+        imageRequired: false,
+      });
+
+      store.dispatch(
+        new SetPermissions(APP_PERMISSIONS, GROUP_PERMISSIONS, {
+          1: { commentRequired: true, imageRequired: true },
+        })
+      );
+      expect(store.selectSnapshot(AuthState.receiptRequirements(2))).toEqual({
+        commentRequired: false,
+        imageRequired: false,
+      });
+    });
+
+    it("is cleared by Logout", () => {
+      store.dispatch(
+        new SetPermissions(APP_PERMISSIONS, GROUP_PERMISSIONS, {
+          1: { commentRequired: true, imageRequired: true },
+        })
+      );
+      store.dispatch(new Logout());
+
+      expect(store.selectSnapshot(AuthState.receiptRequirements(1))).toEqual({
+        commentRequired: false,
+        imageRequired: false,
+      });
+    });
+  });
+
   it("SetGroupCatalog stores per-group categories and tags", () => {
     store.dispatch(new SetGroupCatalog(GROUP_CATEGORIES as any, GROUP_TAGS as any));
 
@@ -68,6 +114,26 @@ describe("AuthState", () => {
 
     expect(store.selectSnapshot(AuthState.appPermissions)).toEqual(APP_PERMISSIONS);
     expect(store.selectSnapshot(AuthState.hasAppPermission("app.users.read"))).toBe(true);
+  });
+
+  describe("closeChipSelectOnSelect", () => {
+    it("defaults to false when there are no user preferences", () => {
+      expect(store.selectSnapshot(AuthState.closeChipSelectOnSelect)).toBe(false);
+    });
+
+    it("defaults to false when the preference is absent from stored preferences", () => {
+      store.dispatch(new SetUserPreferences({ quickScanDefaultGroupId: 1 } as any));
+
+      expect(store.selectSnapshot(AuthState.closeChipSelectOnSelect)).toBe(false);
+    });
+
+    it("reflects the stored preference", () => {
+      store.dispatch(
+        new SetUserPreferences({ closeChipSelectOnSelect: true } as any)
+      );
+
+      expect(store.selectSnapshot(AuthState.closeChipSelectOnSelect)).toBe(true);
+    });
   });
 
   describe("selectors", () => {

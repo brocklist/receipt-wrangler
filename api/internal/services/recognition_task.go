@@ -11,6 +11,7 @@ import (
 	"github.com/hibiken/asynq"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"receipt-wrangler/api/internal/commands"
@@ -34,7 +35,7 @@ func NewRecognitionTaskService() RecognitionTaskService {
 }
 
 func (s RecognitionTaskService) Register(owner uint, c commands.RegisterRecognitionTaskCommand, fingerprint string) (models.RecognitionTask, bool, error) {
-	task := models.RecognitionTask{OwnerUserId: owner, ClientRequestId: c.ClientRequestId, FileName: c.FileName, FileSize: c.FileSize, GroupId: c.GroupId, RequestHash: fingerprint, Status: models.RecognitionAwaitingUpload, Stage: models.RecognitionUpload, Version: 1, Generation: 1, MaxAttempts: 4, PaidByUserId: c.PaidByUserId, ReceiptStatus: c.Status, CategoryIds: c.CategoryIds, TagIds: c.TagIds}
+	task := models.RecognitionTask{OwnerUserId: owner, ClientRequestId: c.ClientRequestId, FileName: c.FileName, FileSize: c.FileSize, GroupId: c.GroupId, RequestHash: fingerprint, Status: models.RecognitionAwaitingUpload, Stage: models.RecognitionUpload, Version: 1, Generation: 1, MaxAttempts: 4, PaidByUserId: c.PaidByUserId, ReceiptStatus: c.Status, CategoryIds: c.CategoryIds, TagIds: c.TagIds, Comment: c.Comment}
 	result := s.Repository.GetDB().Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "owner_user_id"}, {Name: "client_request_id"}}, DoNothing: true}).Create(&task)
 	if result.Error != nil {
 		return task, false, result.Error
@@ -88,6 +89,12 @@ func (s RecognitionTaskService) Flags(user uint, task *models.RecognitionTask) e
 			return grantErr
 		}
 		task.CanRetry = task.CanRetry && allowed
+		if task.CanRetry && task.Comment != "" {
+			task.CanRetry, err = p.HasGroupPermissions(user, task.GroupId, permissions.GroupCommentsCreate)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -350,11 +357,12 @@ func (s RecognitionTaskService) ValidateSubmission(task models.RecognitionTask) 
 	if !ok {
 		return ErrRecognitionForbidden
 	}
-	settings, err := repositories.NewGroupReceiptSettingsRepository(nil).GetGroupReceiptSettingsByGroupId(task.GroupId)
+	quick := commands.QuickScanCommand{Files: []multipart.File{nil}, GroupIds: []uint{task.GroupId}, PaidByUserIds: []uint{task.PaidByUserId}, Statuses: []models.ReceiptStatus{task.ReceiptStatus}, CategoryIds: [][]uint{task.CategoryIds}, TagIds: [][]uint{task.TagIds}, Comments: []string{task.Comment}}
+	resolved, validation, err := NewReceiptService(nil).ResolveQuickScanFields(quick, task.OwnerUserId)
 	if err != nil {
 		return err
 	}
-	if (settings.QuickScanPaidByEnabled && settings.QuickScanPaidByRequired && task.PaidByUserId == 0) || (settings.QuickScanStatusEnabled && settings.QuickScanStatusRequired && task.ReceiptStatus == "") || (settings.QuickScanCategoriesEnabled && settings.QuickScanCategoriesRequired && len(task.CategoryIds) == 0) || (settings.QuickScanTagsEnabled && settings.QuickScanTagsRequired && len(task.TagIds) == 0) {
+	if len(validation.Errors) > 0 || resolved[0].Comment != task.Comment {
 		return ErrRecognitionForbidden
 	}
 	return nil
@@ -397,6 +405,23 @@ func (s RecognitionTaskService) Process(ctx context.Context, id, generation uint
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if processErr == nil {
+			return
+		}
+		// AI success is not receipt success: keep the existing activity audit
+		// accurate when validation or the fenced save transaction aborts.
+		parent := tasks.SystemTask
+		if tasks.FallbackSystemTask.Status == models.SYSTEM_TASK_SUCCEEDED {
+			parent = tasks.FallbackSystemTask
+		}
+		if parent.ID == 0 {
+			return
+		}
+		parentId := parent.ID
+		_, auditErr := NewSystemTaskService(nil).CreateSystemTaskFromError(commands.UpsertSystemTaskCommand{Type: models.RECEIPT_UPLOADED, AssociatedEntityType: models.RECEIPT_PROCESSING_SETTINGS, AssociatedEntityId: parent.AssociatedEntityId, StartedAt: time.Now(), AsynqTaskId: recognitionQueueId(id, generation), GroupId: &task.GroupId, AssociatedSystemTaskId: &parentId}, processErr)
+		processErr = combineEarlyFailureErrors(processErr, auditErr)
+	}()
 	if command.PaidByUserID == 0 {
 		command.PaidByUserID = task.PaidByUserId
 	}
@@ -405,11 +430,11 @@ func (s RecognitionTaskService) Process(ctx context.Context, id, generation uint
 	}
 	command.GroupId = task.GroupId
 	receiptService := NewReceiptService(nil)
-	command.Categories, err = receiptService.mergeQuickScanCategories(command.Categories, task.CategoryIds)
+	command.Categories, err = receiptService.resolveQuickScanCategories(command.Categories, task.CategoryIds, task.OwnerUserId, task.GroupId)
 	if err != nil {
 		return err
 	}
-	command.Tags, err = receiptService.mergeQuickScanTags(command.Tags, task.TagIds)
+	command.Tags, err = receiptService.resolveQuickScanTags(command.Tags, task.TagIds, task.OwnerUserId, task.GroupId)
 	if err != nil {
 		return err
 	}
@@ -434,6 +459,13 @@ func (s RecognitionTaskService) Process(ctx context.Context, id, generation uint
 	}
 	if !allowed {
 		return ErrRecognitionForbidden
+	}
+	if task.Comment != "" {
+		commentUserId := task.OwnerUserId
+		command.Comments = append(command.Comments, commands.UpsertCommentCommand{Comment: task.Comment, UserId: &commentUserId})
+	}
+	if err = ApplyGroupDefaultCustomFields(nil, task.GroupId, &command); err != nil {
+		return err
 	}
 	if v := command.Validate(task.OwnerUserId, true); len(v.Errors) > 0 {
 		return fmt.Errorf("recognized receipt failed validation")
@@ -461,10 +493,13 @@ func (s RecognitionTaskService) Process(ctx context.Context, id, generation uint
 			return saveErr
 		}
 		file, saveErr := repositories.NewReceiptImageRepository(tx).CreateReceiptImage(models.FileData{Name: task.FileName, Size: uint(len(bytes)), ReceiptId: receipt.ID}, bytes)
-		if saveErr != nil {
-			return saveErr
+		if file.ID != 0 {
+			var pathErr error
+			savedImagePath, pathErr = repositories.NewFileRepository(tx).BuildFilePath(utils.UintToString(receipt.ID), utils.UintToString(file.ID), file.Name)
+			if pathErr != nil {
+				return pathErr
+			}
 		}
-		savedImagePath, saveErr = repositories.NewFileRepository(tx).BuildFilePath(utils.UintToString(receipt.ID), utils.UintToString(file.ID), file.Name)
 		if saveErr != nil {
 			return saveErr
 		}

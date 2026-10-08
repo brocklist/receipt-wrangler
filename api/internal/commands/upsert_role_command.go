@@ -30,6 +30,28 @@ type UpsertRoleCommand struct {
 	// therefore hides the member's own receipts too.
 	PaidByUserGrants       []uint `json:"paidByUserGrants"`
 	IncludeOwnPaidReceipts bool   `json:"includeOwnPaidReceipts"`
+	// SeesAllMembers is the "supervisor" exemption for member-presence isolation:
+	// holders of this group role see every member of an isolated group and are
+	// visible to every member. Group-scoped only; ignored (rejected) on APP scope,
+	// mirroring the paid-by flags. Default false ⇒ no effect on existing roles.
+	SeesAllMembers bool `json:"seesAllMembers"`
+	// SkipDefaultGroupCreation suppresses the personal "My Receipts" group that is
+	// otherwise created for every new user assigned this role. App-scoped only;
+	// rejected on GROUP scope (a group role is assigned to a membership, long
+	// after the user was created). Default false ⇒ no effect on existing roles.
+	SkipDefaultGroupCreation bool `json:"skipDefaultGroupCreation"`
+	// RequiresIndividualCategoryGrants / RequiresIndividualTagGrants make per-member
+	// assignment MANDATORY for this role: a member holding it who has no individual
+	// grants sees nothing, rather than falling back to the role's set. This is what
+	// makes forgetting to assign a newly added member fail closed. Group-scoped only
+	// and default false ⇒ no effect on existing roles.
+	RequiresIndividualCategoryGrants bool `json:"requiresIndividualCategoryGrants"`
+	RequiresIndividualTagGrants      bool `json:"requiresIndividualTagGrants"`
+	// RequireReceiptComment / RequireReceiptImage make members holding this group
+	// role supply at least one comment / image on the group's receipts.
+	// Group-scoped only and default false ⇒ no effect on existing roles.
+	RequireReceiptComment bool `json:"requireReceiptComment"`
+	RequireReceiptImage   bool `json:"requireReceiptImage"`
 	// ReportTemplateGrants restrict which report templates members of a group role
 	// may act on, per action. Group-scoped only and opt-in: an empty set means
 	// unrestricted (act on every template the role's group access reaches). Each
@@ -103,12 +125,24 @@ func (command *UpsertRoleCommand) Validate() structs.ValidatorError {
 		}
 	}
 
-	// Category/tag/paid-by grants are a group-role concept (they slice the global
-	// pool / narrow visibility per group role); they make no sense on an app role.
+	// Category/tag/paid-by grants, member-visibility settings and receipt
+	// requirements are a group-role concept (they slice the global pool / narrow
+	// visibility / constrain receipts per group role); they make no sense on an
+	// app role.
 	if command.Scope == permissions.ScopeApp &&
 		(len(command.CategoryGrants) > 0 || len(command.TagGrants) > 0 ||
-			len(command.PaidByUserGrants) > 0 || command.IncludeOwnPaidReceipts) {
-		errors["grants"] = "Category, tag, and paid-by grants are only valid on group roles"
+			len(command.PaidByUserGrants) > 0 || command.IncludeOwnPaidReceipts ||
+			command.SeesAllMembers ||
+			command.RequiresIndividualCategoryGrants || command.RequiresIndividualTagGrants ||
+			command.RequireReceiptComment || command.RequireReceiptImage) {
+		errors["grants"] = "Category, tag, paid-by, member-visibility, and receipt requirement settings are only valid on group roles"
+	}
+
+	// Skipping personal-group creation is an app-role concept: it acts when the
+	// user account is created, whereas a group role is assigned to an existing
+	// membership long after that.
+	if command.Scope == permissions.ScopeGroup && command.SkipDefaultGroupCreation {
+		errors["skipDefaultGroupCreation"] = "Skipping default group creation is only valid on application roles"
 	}
 
 	if hasDuplicateUint(command.CategoryGrants) {

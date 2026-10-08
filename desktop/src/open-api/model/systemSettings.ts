@@ -73,6 +73,26 @@ export interface SystemSettings {
      * Externally reachable origin used for MCP OAuth/metadata/redirect URLs and token audience
      */
     mcpPublicUrl?: string;
+    /**
+     * Whether to show the mobile-setup QR code on the desktop login page
+     */
+    showLoginQr?: boolean;
+    /**
+     * Server/API URL mobile clients connect to; encoded into the login QR\'s deep link
+     */
+    mobileServerUrl?: string;
+    /**
+     * How long a refresh token stays valid, in hours. Refresh tokens rotate on every use, so this is how long a user can be away and still return signed in, not an absolute session cap. 1-720 (30 days); 0 means unset and falls back to the default.
+     */
+    refreshTokenValidForHours?: number;
+    /**
+     * The same for MCP/OAuth connector refresh tokens, kept separate so a long window chosen for human convenience does not extend third-party client tokens. 1-720 (30 days); 0 means unset and falls back to the default.
+     */
+    mcpRefreshTokenValidForHours?: number;
+    /**
+     * How long a file in temp/ is kept once nothing can still act on it, i.e. how long a user has to rerun, preview or download the source image of a failed upload. 24-8760 (1 year); 0 means unset and falls back to the default.
+     */
+    tempFileRetentionHours?: number;
 }
 export namespace SystemSettings {
 }

@@ -69,6 +69,68 @@ func TestCustomFieldKey(t *testing.T) {
 	}
 }
 
+// ParseCustomFieldKey is reached with a client-supplied orderBy (the receipts
+// table persists its sort), so its strictness is the contract the caller relies
+// on to keep arbitrary text out of the column it builds an ORDER BY from.
+func TestParseCustomFieldKey(t *testing.T) {
+	tests := []struct {
+		key    string
+		wantID uint
+		wantOk bool
+	}{
+		{"custom_1", 1, true},
+		{"custom_0", 0, true},
+		{"custom_42", 42, true},
+
+		// The widest id a uint holds on every platform this builds for. One past
+		// it is rejected rather than truncated - parsing "custom_4294967297" at 64
+		// bits and narrowing to uint would name field 1 on a 32-bit build.
+		{"custom_4294967295", 4294967295, true},
+		{"custom_4294967296", 0, false},
+		{"custom_4294967297", 0, false},
+		{"custom_18446744073709551616", 0, false},
+
+		// Digits alone. A derived period key belongs to the reporting engine and is
+		// not a sortable column; the rest are hand-crafted.
+		{"custom_1_month", 0, false},
+		{"custom_abc", 0, false},
+		{"custom_", 0, false},
+		{"custom_+1", 0, false},
+		{"custom_-1", 0, false},
+		{"custom_ 1", 0, false},
+		{"custom_1; DROP TABLE receipts", 0, false},
+		{"date", 0, false},
+		{"", 0, false},
+	}
+
+	for _, test := range tests {
+		gotID, gotOk := ParseCustomFieldKey(test.key)
+		if gotID != test.wantID || gotOk != test.wantOk {
+			t.Errorf(
+				"ParseCustomFieldKey(%q) = (%d, %t), want (%d, %t)",
+				test.key, gotID, gotOk, test.wantID, test.wantOk,
+			)
+		}
+	}
+}
+
+// The two halves must agree: every key the builder emits has to parse back to
+// the id it was built from, or a saved sort silently stops resolving.
+func TestParseCustomFieldKeyRoundTripsCustomFieldKey(t *testing.T) {
+	for _, id := range []uint{0, 1, 7, 42, 4294967295} {
+		key := string(CustomFieldKey(id))
+
+		gotID, ok := ParseCustomFieldKey(key)
+		if !ok {
+			t.Errorf("ParseCustomFieldKey(%q) rejected a key CustomFieldKey(%d) built", key, id)
+			continue
+		}
+		if gotID != id {
+			t.Errorf("ParseCustomFieldKey(%q) = %d, want %d", key, gotID, id)
+		}
+	}
+}
+
 // A currency custom field is a measure, so a tax field is summable without any
 // special case. Everything else cuts the data.
 func TestSource_CatalogTypesCustomFields(t *testing.T) {
@@ -104,6 +166,122 @@ func TestSource_CatalogTypesCustomFields(t *testing.T) {
 			}
 			if field.Multi {
 				t.Errorf("custom fields are single-valued")
+			}
+		})
+	}
+}
+
+func TestCustomFieldPeriodKeys(t *testing.T) {
+	day, month, year := CustomFieldPeriodKeys(dueDateFieldID)
+	if day != "custom_4_day" || month != "custom_4_month" || year != "custom_4_year" {
+		t.Errorf("CustomFieldPeriodKeys(%d) = %q, %q, %q", dueDateFieldID, day, month, year)
+	}
+}
+
+// Only a date custom field derives calendar-period fields, and they are labelled
+// off the field's own name so a builder can offer "Due Date (Month)" beside it.
+func TestSource_CatalogHasCustomDatePeriodFields(t *testing.T) {
+	catalog := mustNew(t).Catalog()
+
+	tests := []struct {
+		key   reporting.FieldKey
+		label string
+	}{
+		{"custom_4_day", "Due Date (Day)"},
+		{"custom_4_month", "Due Date (Month)"},
+		{"custom_4_year", "Due Date (Year)"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.key), func(t *testing.T) {
+			field, exists := catalog.Get(test.key)
+			if !exists {
+				t.Fatalf("catalog is missing %s", test.key)
+			}
+			if field.Label != test.label {
+				t.Errorf("label = %q, want %q", field.Label, test.label)
+			}
+			// String so the engine buckets on the exact label, single-valued, and
+			// a dimension so a report may group by it.
+			if field.DataType != reporting.TypeString {
+				t.Errorf("dataType = %v, want %v", field.DataType, reporting.TypeString)
+			}
+			if field.Multi {
+				t.Errorf("%s is single-valued", test.key)
+			}
+		})
+	}
+
+	// A field of any other type derives nothing — periods only make sense for a date.
+	for _, key := range []reporting.FieldKey{
+		"custom_1_month", "custom_2_month", "custom_3_month", "custom_5_month",
+	} {
+		if _, exists := catalog.Get(key); exists {
+			t.Errorf("catalog has %s, want no period fields on a non-date custom field", key)
+		}
+	}
+}
+
+func TestSource_DerivesCustomDatePeriodFields(t *testing.T) {
+	row := mustNew(t).Rows([]models.Receipt{fullReceipt()})[0]
+
+	tests := []struct {
+		key  reporting.FieldKey
+		want string
+	}{
+		// custom_4 (Due Date) = 2026-06-01
+		{"custom_4_day", "2026-06-01"},
+		{"custom_4_month", "2026-06"},
+		{"custom_4_year", "2026"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.key), func(t *testing.T) {
+			text, isText := row.Measure(test.key).Text()
+			if !isText || text != test.want {
+				t.Errorf("%s = %v, want %q", test.key, row.Measure(test.key), test.want)
+			}
+		})
+	}
+}
+
+// A receipt carrying no value for a date custom field emits none of its period
+// fields either, so it lands in the (None) bucket whichever one a report groups by.
+func TestSource_MissingCustomDateOmitsPeriodFields(t *testing.T) {
+	receipt := models.Receipt{CustomFields: []models.CustomFieldValue{
+		{CustomFieldId: dueDateFieldID},
+	}}
+
+	row := mustNew(t).Rows([]models.Receipt{receipt})[0]
+
+	for _, key := range []reporting.FieldKey{"custom_4", "custom_4_day", "custom_4_month", "custom_4_year"} {
+		if values := row.Get(key); len(values) != 0 {
+			t.Errorf("%s = %v, want no value", key, values)
+		}
+	}
+}
+
+// The period fields must describe whichever duplicate value actually won, not
+// whichever one was written last.
+func TestSource_DuplicateCustomDateValuesDerivePeriodsFromTheWinner(t *testing.T) {
+	lower := time.Date(2026, 1, 9, 0, 0, 0, 0, time.UTC)
+	higher := time.Date(2027, 11, 30, 0, 0, 0, 0, time.UTC)
+
+	ascending := models.Receipt{CustomFields: []models.CustomFieldValue{
+		{BaseModel: models.BaseModel{ID: 10}, CustomFieldId: dueDateFieldID, DateValue: &lower},
+		{BaseModel: models.BaseModel{ID: 20}, CustomFieldId: dueDateFieldID, DateValue: &higher},
+	}}
+	descending := models.Receipt{CustomFields: []models.CustomFieldValue{
+		{BaseModel: models.BaseModel{ID: 20}, CustomFieldId: dueDateFieldID, DateValue: &higher},
+		{BaseModel: models.BaseModel{ID: 10}, CustomFieldId: dueDateFieldID, DateValue: &lower},
+	}}
+
+	source := mustNew(t)
+	for name, receipt := range map[string]models.Receipt{"ascending": ascending, "descending": descending} {
+		t.Run(name, func(t *testing.T) {
+			row := source.Rows([]models.Receipt{receipt})[0]
+
+			text, isText := row.Measure("custom_4_month").Text()
+			if !isText || text != "2026-01" {
+				t.Errorf("custom_4_month = %v, want 2026-01 (the value with the lowest id)", row.Measure("custom_4_month"))
 			}
 		})
 	}

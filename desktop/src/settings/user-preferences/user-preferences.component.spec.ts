@@ -87,7 +87,7 @@ describe("UserPreferencesComponent", () => {
       quickScanDefaultPaidById: "",
       quickScanDefaultGroupId: "",
       quickScanDefaultStatus: "",
-      showLargeImagePreviews: false,
+      closeChipSelectOnSelect: false,
       userShortcuts: []
     });
   });
@@ -102,8 +102,8 @@ describe("UserPreferencesComponent", () => {
           quickScanDefaultPaidById: "1",
           quickScanDefaultGroupId: "2",
           quickScanDefaultStatus: "OPEN",
-          showLargeImagePreviews: true,
-          userShortcuts: [{ id: 1, name: "Test", url: "test", icon: "icon" }],
+          closeChipSelectOnSelect: true,
+              userShortcuts: [{ id: 1, name: "Test", url: "test", icon: "icon" }],
         },
       },
     });
@@ -113,7 +113,7 @@ describe("UserPreferencesComponent", () => {
       quickScanDefaultPaidById: "1",
       quickScanDefaultGroupId: "2",
       quickScanDefaultStatus: "OPEN",
-      showLargeImagePreviews: true,
+      closeChipSelectOnSelect: true,
       userShortcuts: [{ name: "Test", url: "test", icon: "icon", trackby: 0 }],
     });
   });
@@ -161,7 +161,7 @@ describe("UserPreferencesComponent", () => {
       quickScanDefaultPaidById: null,
       quickScanDefaultGroupId: null,
       quickScanDefaultStatus: "",
-      showLargeImagePreviews: false,
+      closeChipSelectOnSelect: false,
       userShortcuts: [],
     } as any);
   });

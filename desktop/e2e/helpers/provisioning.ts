@@ -39,6 +39,32 @@ export interface CreateRoleOptions {
    */
   paidByOwn?: boolean;
   paidByUsers?: string[];
+  /**
+   * App-role only: tick "Don't create a personal group for new users with this
+   * role" in the "Group creation" card, so accounts created with the role skip
+   * the automatic "My Receipts" group (the virtual "All" group is still made).
+   */
+  skipDefaultGroup?: boolean;
+  /**
+   * Group-role category/tag grants (the shared app-grant-picker), by NAME. This
+   * is the ceiling a member's individual assignment narrows within. Leaving both
+   * unset keeps the role unrestricted (members see every category/tag).
+   */
+  categoryGrants?: string[];
+  tagGrants?: string[];
+  /**
+   * Flips "Require an individual category/tag assignment for each member", so a
+   * member with no assignment sees nothing instead of the role's set.
+   */
+  requiresIndividualCategories?: boolean;
+  requiresIndividualTags?: boolean;
+  /**
+   * Group-role only: ticks "Require a comment on receipts" / "Require an image
+   * on receipts", so members must keep at least one of each on the group's
+   * receipts (enforced server-side on create, update and delete-last).
+   */
+  requireReceiptComment?: boolean;
+  requireReceiptImage?: boolean;
 }
 
 /**
@@ -78,6 +104,13 @@ export async function createRole(page: Page, opts: CreateRoleOptions): Promise<v
     await page.getByRole('button', { name: `Toggle ${label}` }).click();
   }
 
+  if (opts.skipDefaultGroup) {
+    await page
+      .getByTestId('skip-default-group')
+      .getByRole('checkbox')
+      .check();
+  }
+
   if (opts.paidByOwn || (opts.paidByUsers?.length ?? 0) > 0) {
     // The picker is a multi-select autocomplete; while its panel is open the
     // listbox shares the field's label, so target the combobox role.
@@ -99,22 +132,90 @@ export async function createRole(page: Page, opts: CreateRoleOptions): Promise<v
     await page.keyboard.press('Escape');
   }
 
+  await selectGrants(page, 'grant-picker-categories', 'Categories', opts.categoryGrants);
+  await selectGrants(page, 'grant-picker-tags', 'Tags', opts.tagGrants);
+
+  if (opts.requiresIndividualCategories) {
+    await page
+      .getByText('Require an individual category assignment for each member')
+      .click();
+  }
+  if (opts.requiresIndividualTags) {
+    await page
+      .getByText('Require an individual tag assignment for each member')
+      .click();
+  }
+
+  if (opts.requireReceiptComment) {
+    await page.getByTestId('require-receipt-comment').getByRole('checkbox').check();
+  }
+  if (opts.requireReceiptImage) {
+    await page.getByTestId('require-receipt-image').getByRole('checkbox').check();
+  }
+
   await page.getByRole('button', { name: 'Save Role' }).click();
   await expect(page).toHaveURL(/\/roles$/);
 }
 
-/** Creates a user assigned [opts.role] via the Create User dialog. */
+/**
+ * Picks [names] in one of the grant picker's multi-select autocompletes. While
+ * the option panel is open the listbox shares the field's label, so the field is
+ * targeted by its combobox role within the testid-scoped picker.
+ */
+async function selectGrants(
+  page: Page,
+  testId: string,
+  label: string,
+  names?: string[],
+): Promise<void> {
+  if (!names?.length) {
+    return;
+  }
+
+  const field = page.getByTestId(testId).getByRole('combobox', { name: label });
+  for (const name of names) {
+    await field.click();
+    await field.fill(name);
+    await page.getByRole('option', { name, exact: true }).click();
+  }
+  // Selecting an option re-opens the panel; close it so Save stays clickable.
+  await page.keyboard.press('Escape');
+}
+
+/** Creates a user assigned [opts.role] via the Add User dialog. */
 export async function createUserWithRole(
   page: Page,
   opts: { username: string; password: string; role: string },
 ): Promise<void> {
   await page.goto('/users');
-  await page.getByRole('button', { name: 'Create User' }).click();
+  await page.getByTestId('user-add').click();
   const dialog = page.getByRole('dialog').filter({ hasText: 'Create User' });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel('Username').fill(opts.username);
-  await dialog.getByLabel('Displayname').fill(opts.username);
-  await dialog.getByLabel('Password').fill(opts.password);
+
+  // The password input is *ngIf-ed in (create mode only) and carries the
+  // generate/visibility buttons, so it settles a tick after the dialog opens.
+  // Wait for it BEFORE filling anything: typing into a half-rendered dialog can
+  // land the password in whichever field currently owns focus (seen as a
+  // username of "<name><password>" and an empty, still-required password).
+  const password = dialog.getByLabel('Password', { exact: true });
+  await expect(password).toBeVisible();
+
+  // Waiting for the password field narrows that race but does not close it — a
+  // fill can still land in a neighbouring input while the dialog settles, and
+  // because Username and Displayname carry the SAME value the damage reads as a
+  // doubled username ("<name><name>") rather than as an obvious mis-type. So
+  // fill and verify as one retryable unit: a misdirected round re-fills from
+  // scratch instead of failing the whole spec's beforeAll. Same idiom as
+  // openComboboxAndPick in helpers/reports.ts.
+  await expect(async () => {
+    await dialog.getByLabel('Username').fill(opts.username);
+    await dialog.getByLabel('Displayname').fill(opts.username);
+    await password.fill(opts.password);
+
+    await expect(dialog.getByLabel('Username')).toHaveValue(opts.username, { timeout: 2000 });
+    await expect(dialog.getByLabel('Displayname')).toHaveValue(opts.username, { timeout: 2000 });
+    await expect(password).toHaveValue(opts.password, { timeout: 2000 });
+  }).toPass({ timeout: 15_000 });
   await dialog.getByRole('combobox', { name: 'App Role' }).click();
   // The option panel is a floating overlay rendered on the page, not the dialog.
   await page.getByRole('option', { name: opts.role, exact: true }).click();
@@ -172,6 +273,28 @@ const apiBaseUrl = (): string =>
   process.env.E2E_BASE_URL ?? 'http://localhost:4200';
 
 /**
+ * Opens an `APIRequestContext` authenticated with the given credentials, runs
+ * [fn], and disposes it. Use for a user the test provisioned itself, which has
+ * no `E2E_*` env credentials — for a fixture account use `withApiAs` instead.
+ */
+export async function withApiAsCreds<T>(
+  username: string,
+  password: string,
+  fn: (api: APIRequestContext) => Promise<T>,
+): Promise<T> {
+  const api = await pwRequest.newContext({ baseURL: apiBaseUrl() });
+  try {
+    const res = await api.post('/api/login', { data: { username, password } });
+    if (!res.ok()) {
+      throw new Error(`${username} API login failed: HTTP ${res.status()}`);
+    }
+    return await fn(api);
+  } finally {
+    await api.dispose();
+  }
+}
+
+/**
  * Opens an `APIRequestContext` authenticated as the given e2e [role], runs [fn],
  * and disposes it. Use to drive API calls AS a specific user — e.g. asserting a
  * restricted user's request is denied, or admin teardown.
@@ -180,17 +303,8 @@ export async function withApiAs<T>(
   role: Role,
   fn: (api: APIRequestContext) => Promise<T>,
 ): Promise<T> {
-  const api = await pwRequest.newContext({ baseURL: apiBaseUrl() });
-  try {
-    const { username, password } = creds(role);
-    const res = await api.post('/api/login', { data: { username, password } });
-    if (!res.ok()) {
-      throw new Error(`${role} API login failed: HTTP ${res.status()}`);
-    }
-    return await fn(api);
-  } finally {
-    await api.dispose();
-  }
+  const { username, password } = creds(role);
+  return withApiAsCreds(username, password, fn);
 }
 
 /**
@@ -219,19 +333,71 @@ export async function apiGetUserId(
   return user.id;
 }
 
+/**
+ * Returns the names of the groups the authenticated caller belongs to, including
+ * the virtual "All" group. `GET /api/group/` lists the caller's own groups and is
+ * gated on app.account.read, so the caller's role must grant it.
+ */
+export async function apiGroupNames(api: APIRequestContext): Promise<string[]> {
+  const res = await api.get('/api/group/');
+  if (!res.ok()) {
+    throw new Error(
+      `list groups failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+  const groups = (await res.json()) as { name: string }[];
+  return groups.map((group) => group.name);
+}
+
+/**
+ * One custom field value on a receipt. Exactly one of the typed columns is
+ * populated, chosen by the field's own type — a currency field reads
+ * currencyValue, a date field dateValue, and so on (the server stores whatever
+ * it is given, so a mismatched column simply resolves to no value in a report).
+ */
+export interface ReceiptCustomFieldValue {
+  customFieldId: number;
+  stringValue?: string;
+  dateValue?: string;
+  selectValue?: number;
+  currencyValue?: string;
+  booleanValue?: boolean;
+}
+
 /** Creates a minimal OPEN receipt and returns its id. */
 export async function apiCreateReceipt(
   api: APIRequestContext,
-  opts: { groupId: number | string; paidByUserId: number; name: string },
+  opts: {
+    groupId: number | string;
+    paidByUserId: number;
+    name: string;
+    /** Receipt date as an ISO string. Defaults to a fixed date in 2024. */
+    date?: string;
+    /**
+     * Receipt status. Defaults to OPEN. Pass RESOLVED to have the server stamp
+     * `resolvedDate` — the only way to seed a receipt the Resolved Date filter
+     * can match.
+     */
+    status?: string;
+    /**
+     * Receipt amount as a decimal string. Defaults to '10.00'. Specs that assert
+     * over summed money need distinguishable amounts — a uniform 10.00 makes
+     * every total a multiple of ten, which cannot tell a correct sum from a
+     * miscount.
+     */
+    amount?: string;
+    customFields?: ReceiptCustomFieldValue[];
+  },
 ): Promise<number> {
   const res = await api.post('/api/receipt', {
     data: {
       name: opts.name,
-      amount: '10.00',
-      date: '2024-01-01T00:00:00Z',
+      amount: opts.amount ?? '10.00',
+      date: opts.date ?? '2024-01-01T00:00:00Z',
       groupId: Number(opts.groupId),
       paidByUserId: opts.paidByUserId,
-      status: 'OPEN',
+      status: opts.status ?? 'OPEN',
+      ...(opts.customFields ? { customFields: opts.customFields } : {}),
     },
   });
   if (!res.ok()) {
@@ -357,7 +523,18 @@ export async function apiFirstReportCategory(
  */
 export async function apiCreateReportTemplate(
   api: APIRequestContext,
-  opts?: { name?: string; groupIds?: string[]; formats?: string[]; filter?: unknown },
+  opts?: {
+    name?: string;
+    groupIds?: string[];
+    formats?: string[];
+    filter?: unknown;
+    // The shape of the report itself. Defaulted to the records-mode config every
+    // caller wanted before; override to store a grouped/aggregated template, e.g.
+    // one grouped by a custom field's `custom_<id>` key.
+    groupBy?: string[];
+    detail?: { mode: 'records' | 'aggregate'; by?: string };
+    columns?: unknown[];
+  },
 ): Promise<{ id: number; name: string }> {
   const name = opts?.name ?? uniqueName('report-template');
   // Scope a real group the caller can report on, so generating over it isn't
@@ -368,9 +545,12 @@ export async function apiCreateReportTemplate(
       name,
       groupIds,
       period: { preset: 'this_month' },
-      detail: { mode: 'records' },
-      columns: [{ kind: 'dimension', name: 'Name', label: 'Name', field: 'name' }],
+      detail: opts?.detail ?? { mode: 'records' },
+      columns: opts?.columns ?? [
+        { kind: 'dimension', name: 'Name', label: 'Name', field: 'name' },
+      ],
       formats: opts?.formats ?? ['csv'],
+      ...(opts?.groupBy ? { groupBy: opts.groupBy } : {}),
       ...(opts?.filter ? { filter: opts.filter } : {}),
     },
   });
@@ -388,6 +568,23 @@ export interface UpsertRolePayload {
   scope: 'APP' | 'GROUP';
   permissions: string[];
   reportTemplateGrants?: { reportTemplateId: number; permissions: string[] }[];
+  /**
+   * Category/tag ids a GROUP role's members may see. This is the CEILING that a
+   * member's individual assignment narrows within — the two intersect. Empty (or
+   * omitted) means unrestricted, matching the backend's grant convention.
+   */
+  categoryGrants?: number[];
+  tagGrants?: number[];
+  /**
+   * When true, a member holding this role with NO individual assignment sees
+   * nothing at all rather than falling back to the role's set — so forgetting to
+   * assign a new member fails closed.
+   */
+  requiresIndividualCategoryGrants?: boolean;
+  requiresIndividualTagGrants?: boolean;
+  /** GROUP roles only: members must keep a comment / an image on receipts. */
+  requireReceiptComment?: boolean;
+  requireReceiptImage?: boolean;
 }
 
 /**
@@ -437,6 +634,362 @@ export async function apiDeleteReportTemplateById(
   await api.delete(`/api/report/template/${id}`);
 }
 
+// --- Categories / tags -------------------------------------------------------
+//
+// Categories and tags are GLOBAL with a uniquely-indexed name, so every spec must
+// mint uniqueName-suffixed ones and delete them in teardown; a leaked name makes
+// the next run's create fail.
+
+/** Creates a category and returns its id + name. */
+export async function apiCreateCategory(
+  api: APIRequestContext,
+  name: string,
+): Promise<{ id: number; name: string }> {
+  const res = await api.post('/api/category', { data: { name, description: '' } });
+  if (!res.ok()) {
+    throw new Error(
+      `create category failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+  const category = (await res.json()) as { id: number; name: string };
+  return { id: category.id, name: category.name };
+}
+
+/** Creates a tag and returns its id + name. */
+export async function apiCreateTag(
+  api: APIRequestContext,
+  name: string,
+): Promise<{ id: number; name: string }> {
+  const res = await api.post('/api/tag', { data: { name, description: '' } });
+  if (!res.ok()) {
+    throw new Error(`create tag failed: HTTP ${res.status()} ${await res.text()}`);
+  }
+  const tag = (await res.json()) as { id: number; name: string };
+  return { id: tag.id, name: tag.name };
+}
+
+/**
+ * Warns rather than throws on a failed delete.
+ *
+ * Every caller runs inside an `afterAll` whose body is wrapped in `try/catch {}`
+ * so cleanup can never mask a test failure. Throwing here would be swallowed by
+ * that catch AND abort the remaining deletes in the same block — leaking more
+ * names than it reports. A warning keeps every delete running and still puts the
+ * failure in the test output, which is what makes a leaked unique name (the thing
+ * that breaks the next run's create) diagnosable.
+ */
+async function warnOnFailedDelete(
+  api: APIRequestContext,
+  path: string,
+  what: string,
+): Promise<void> {
+  const res = await api.delete(path);
+  if (!res.ok()) {
+    console.warn(
+      `e2e cleanup: failed to delete ${what} — HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+}
+
+export async function apiDeleteCategoryById(
+  api: APIRequestContext,
+  id: number,
+): Promise<void> {
+  await warnOnFailedDelete(api, `/api/category/${id}`, `category ${id}`);
+}
+
+export async function apiDeleteTagById(
+  api: APIRequestContext,
+  id: number,
+): Promise<void> {
+  await warnOnFailedDelete(api, `/api/tag/${id}`, `tag ${id}`);
+}
+
+// --- Custom fields -----------------------------------------------------------
+//
+// Like categories and tags the pool is GLOBAL, so mint uniqueName-suffixed fields
+// and delete them in teardown — a leaked one shows up in every other spec's
+// pickers. Deleting a field destroys every value stored against it, so a spec
+// that seeds receipts with values must delete those receipts (or their group)
+// too.
+
+export type CustomFieldType = 'TEXT' | 'DATE' | 'SELECT' | 'CURRENCY' | 'BOOLEAN';
+
+/** Creates a custom field and returns its id + name. */
+export async function apiCreateCustomField(
+  api: APIRequestContext,
+  opts: { name: string; type: CustomFieldType; options?: string[] },
+): Promise<{ id: number; name: string }> {
+  const res = await api.post('/api/customField/', {
+    data: {
+      name: opts.name,
+      type: opts.type,
+      description: '',
+      options: (opts.options ?? []).map((value) => ({ value })),
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `create custom field failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+  const customField = (await res.json()) as { id: number; name: string };
+  return { id: customField.id, name: customField.name };
+}
+
+/** Reads one custom field back, so a spec can assert what an edit persisted. */
+export async function apiGetCustomFieldById(
+  api: APIRequestContext,
+  id: number,
+): Promise<{
+  id: number;
+  name: string;
+  type: string;
+  description?: string;
+  options?: { id: number; value: string }[];
+}> {
+  const res = await api.get(`/api/customField/${id}`);
+  if (!res.ok()) {
+    throw new Error(
+      `get custom field failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+  return res.json();
+}
+
+/** Deletes a custom field. Requires app.custom-fields.delete (admin-only). */
+export async function apiDeleteCustomFieldById(
+  api: APIRequestContext,
+  id: number,
+): Promise<void> {
+  await warnOnFailedDelete(api, `/api/customField/${id}`, `custom field ${id}`);
+}
+
+// --- Group receipt settings ---------------------------------------------------
+
+/**
+ * Reads [groupId]'s current receipt settings and returns them as a PUT body.
+ *
+ * `PUT /group/{id}/groupReceiptSettings` is an UPSERT over the whole settings
+ * object, so a partial body resets every non-pointer flag to false. This echoes
+ * the boolean flags back unchanged; a caller spreads its own overrides on top.
+ *
+ * Only the booleans are echoed: the enum defaults (`quickScanDefaultPaidByType` /
+ * `...Status`) are omitted because the backend keeps its stored value and rejects
+ * an empty enum, which is also why paid-by and status stay shown+required here
+ * (making either optional would need a configured default).
+ *
+ * The POINTER command fields — `defaultCustomFieldIds`, the three
+ * `receiptSummary*` keys — are deliberately absent: omitting a pointer key means
+ * "leave unchanged", so a caller that does not set one cannot clobber it.
+ *
+ * Shared by every settings setter below so the key list exists once. A new
+ * non-pointer flag added to the command has to be added here or it is silently
+ * zeroed by every one of them.
+ */
+async function groupReceiptSettingsEcho(
+  api: APIRequestContext,
+  groupId: number | string,
+  what: string,
+): Promise<Record<string, unknown>> {
+  const groupsRes = await api.get('/api/group/');
+  if (!groupsRes.ok()) {
+    throw new Error(
+      `${what}: GET /api/group/ failed: HTTP ${groupsRes.status()} ${await groupsRes.text()}`,
+    );
+  }
+  const groups = (await groupsRes.json()) as {
+    id: number;
+    groupReceiptSettings?: Record<string, unknown>;
+  }[];
+  const group = groups.find((g) => String(g.id) === String(groupId));
+  if (!group) {
+    throw new Error(`${what}: group ${groupId} not visible`);
+  }
+
+  const settings = group.groupReceiptSettings ?? {};
+  const command: Record<string, unknown> = {};
+  for (const key of [
+    'hideImages', 'hideReceiptCategories', 'hideReceiptTags',
+    'hideItemCategories', 'hideItemTags', 'hideComments',
+    'hideShareCategories', 'hideShareTags',
+    'quickScanPaidByEnabled', 'quickScanPaidByRequired',
+    'quickScanStatusEnabled', 'quickScanStatusRequired',
+    'quickScanCategoriesEnabled', 'quickScanCategoriesRequired',
+    'quickScanTagsEnabled', 'quickScanTagsRequired',
+    'quickScanCommentEnabled', 'quickScanCommentRequired',
+    'applyDefaultCustomFieldsOnIngest',
+  ]) {
+    command[key] = settings[key] ?? false;
+  }
+
+  return command;
+}
+
+async function putGroupReceiptSettings(
+  api: APIRequestContext,
+  groupId: number | string,
+  command: Record<string, unknown>,
+  what: string,
+): Promise<void> {
+  const res = await api.put(`/api/group/${groupId}/groupReceiptSettings`, {
+    data: command,
+  });
+  if (!res.ok()) {
+    throw new Error(`${what} failed: HTTP ${res.status()} ${await res.text()}`);
+  }
+}
+
+/**
+ * Persists [customFieldIds] as [groupId]'s default custom fields, optionally
+ * flipping the "apply on ingest" toggle with [applyOnIngest]. Mirrors the mobile
+ * suite's `setGroupDefaultCustomFields` fixture.
+ *
+ * Pass `[]` to clear the group's set.
+ */
+export async function apiSetGroupDefaultCustomFields(
+  api: APIRequestContext,
+  groupId: number | string,
+  customFieldIds: number[],
+  applyOnIngest?: boolean,
+): Promise<void> {
+  const what = 'set default custom fields';
+  const command = await groupReceiptSettingsEcho(api, groupId, what);
+  command['defaultCustomFieldIds'] = customFieldIds;
+  if (applyOnIngest !== undefined) {
+    command['applyDefaultCustomFieldsOnIngest'] = applyOnIngest;
+  }
+
+  await putGroupReceiptSettings(api, groupId, command, what);
+}
+
+/**
+ * Configures [groupId]'s receipt summary — the block of totals under the receipts
+ * table. Lets a spec seed the configuration without driving the settings form.
+ *
+ * [currencyCustomFieldIds] must reference CURRENCY custom fields; the server 400s
+ * anything else, because only a currency value can be summed. Pass `[]` for either
+ * set to clear it.
+ */
+export async function apiSetGroupSummaryConfig(
+  api: APIRequestContext,
+  groupId: number | string,
+  config: {
+    enabled: boolean;
+    statuses?: string[];
+    currencyCustomFieldIds?: number[];
+    position?: 'TOP' | 'BOTTOM';
+  },
+): Promise<void> {
+  const what = 'set receipt summary config';
+  const command = await groupReceiptSettingsEcho(api, groupId, what);
+  command['receiptSummaryEnabled'] = config.enabled;
+  if (config.statuses !== undefined) {
+    command['receiptSummaryStatuses'] = config.statuses;
+  }
+  if (config.currencyCustomFieldIds !== undefined) {
+    command['receiptSummaryCustomFieldIds'] = config.currencyCustomFieldIds;
+  }
+  if (config.position !== undefined) {
+    command['receiptSummaryPosition'] = config.position;
+  }
+
+  await putGroupReceiptSettings(api, groupId, command, what);
+}
+
+// --- Per-member category/tag grants ------------------------------------------
+
+/**
+ * Replaces one group member's individual category/tag assignment, returning the
+ * RAW response so a spec can assert the status (200 / 400 out-of-ceiling / 403
+ * missing group.members.grants.update / 404 non-member) rather than only the
+ * happy-path effect.
+ *
+ * [groupId]/[userId] go in the URL because that is what the endpoint authorizes
+ * against; [body] may carry contradicting ids to prove the URL wins.
+ */
+export async function apiSetMemberGrants(
+  api: APIRequestContext,
+  groupId: number | string,
+  userId: number,
+  body: { categoryGrants?: number[]; tagGrants?: number[] } & Record<string, unknown>,
+) {
+  return api.put(`/api/group/${groupId}/member/${userId}/grants`, { data: body });
+}
+
+/**
+ * The category/tag names the calling user can actually SEE in [groupId], read
+ * from appData's per-group catalogs.
+ *
+ * This is deliberately the assertion surface for effective visibility: it is the
+ * very array the desktop's receipt-form pickers render from, so it tests the real
+ * delivery path rather than a parallel one. Names (not ids) so failures read
+ * clearly.
+ */
+export async function apiMemberCatalog(
+  api: APIRequestContext,
+  groupId: number | string,
+): Promise<{ categories: string[]; tags: string[] }> {
+  const appData = (await (await api.get('/api/user/appData')).json()) as {
+    groupCategories?: Record<string, { name?: string }[]>;
+    groupTags?: Record<string, { name?: string }[]>;
+  };
+  const key = String(groupId);
+  const names = (entries?: { name?: string }[]) =>
+    (entries ?? []).map((e) => e.name ?? '').sort();
+
+  return {
+    categories: names(appData.groupCategories?.[key]),
+    tags: names(appData.groupTags?.[key]),
+  };
+}
+
+/** Replaces a group's whole member roster (the wholesale UpdateGroup path). */
+export async function apiSetGroupRoster(
+  api: APIRequestContext,
+  groupId: number | string,
+  opts: {
+    name: string;
+    members: { userId: number; groupRoleId: number }[];
+  },
+) {
+  return api.put(`/api/group/${groupId}`, {
+    data: {
+      name: opts.name,
+      status: 'ACTIVE',
+      isAllGroup: false,
+      groupMembers: opts.members.map((m) => ({
+        userId: m.userId,
+        groupId: Number(groupId),
+        groupRoleId: m.groupRoleId,
+      })),
+    },
+  });
+}
+
+/** Returns a group's members (including their individual grant ids). */
+export async function apiGetGroupMembers(
+  api: APIRequestContext,
+  groupId: number | string,
+): Promise<
+  {
+    userId: number;
+    groupRoleId: number;
+    categoryGrants?: number[] | null;
+    tagGrants?: number[] | null;
+  }[]
+> {
+  const group = (await (await api.get(`/api/group/${groupId}`)).json()) as {
+    groupMembers: {
+      userId: number;
+      groupRoleId: number;
+      categoryGrants?: number[] | null;
+      tagGrants?: number[] | null;
+    }[];
+  };
+  return group.groupMembers;
+}
+
 /**
  * Deletes the [scope] role named [name]. Only succeeds once it's unassigned, so
  * call after the user/group that referenced it is gone.
@@ -455,4 +1008,222 @@ export async function apiDeleteRoleByName(
   if (role) {
     await api.delete(`/api/role/${role.id}?scope=${scope}`);
   }
+}
+
+/**
+ * Creates a receipt-processing configuration pointed at an unreachable host, so
+ * every AI call made through it fails.
+ *
+ * `isVisionModel` is set so the pipeline skips OCR and goes straight to the AI
+ * call -- that keeps the failure fast and independent of whether Tesseract is
+ * installed on the backend under test.
+ */
+export async function apiCreateUnreachableProcessingSettings(
+  api: APIRequestContext,
+  name: string,
+): Promise<{ id: number; promptId: number }> {
+  const promptRes = await api.post('/api/prompt/', {
+    data: {
+      name,
+      description: 'e2e: forces a failed quick scan',
+      prompt: 'Extract the receipt. @categories @tags',
+    },
+  });
+  if (!promptRes.ok()) {
+    throw new Error(
+      `create prompt failed: HTTP ${promptRes.status()} ${await promptRes.text()}`,
+    );
+  }
+  const prompt = (await promptRes.json()) as { id: number };
+
+  const res = await api.post('/api/receiptProcessingSettings/', {
+    data: {
+      name,
+      description: 'e2e: forces a failed quick scan',
+      aiType: 'OPEN_AI_CUSTOM',
+      // Reserved for documentation examples, so it can never resolve.
+      url: 'http://invalid.example:9/v1',
+      key: 'e2e',
+      model: 'e2e',
+      isVisionModel: true,
+      promptId: prompt.id,
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `create receipt processing settings failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+  const settings = (await res.json()) as { id: number };
+
+  return { id: settings.id, promptId: prompt.id };
+}
+
+/**
+ * Overlays one field onto the live system settings. Re-reads first so a
+ * concurrent change to an unrelated setting is not clobbered by a stale
+ * snapshot -- the PUT is an upsert needing the full object.
+ */
+export async function apiPatchSystemSettings(
+  api: APIRequestContext,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const getResponse = await api.get('/api/systemSettings');
+  if (!getResponse.ok()) {
+    throw new Error(`GET /api/systemSettings failed: HTTP ${getResponse.status()}`);
+  }
+  const current = await getResponse.json();
+
+  const putResponse = await api.put('/api/systemSettings', {
+    data: { ...current, ...patch },
+  });
+  if (!putResponse.ok()) {
+    throw new Error(
+      `PUT /api/systemSettings failed: HTTP ${putResponse.status()} ${await putResponse.text()}`,
+    );
+  }
+}
+
+/** Posts a quick scan of [file] for [groupId]. Fire-and-forget on the server. */
+export async function apiQuickScan(
+  api: APIRequestContext,
+  groupId: number,
+  paidByUserId: number,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<void> {
+  const res = await api.post('/api/receipt/quickScan', {
+    multipart: {
+      files: file,
+      groupIds: String(groupId),
+      paidByUserIds: String(paidByUserId),
+      statuses: 'OPEN',
+      categoryIds: '',
+      tagIds: '',
+      comments: '',
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `quick scan failed: HTTP ${res.status()} ${await res.text()}`,
+    );
+  }
+}
+
+/**
+ * Creates an API key and immediately deletes it, which records exactly one
+ * `API_KEY_DELETED` system task attributed to the caller.
+ *
+ * This is how a system-task spec seeds a deterministic row: system tasks are
+ * only ever written as a side effect of real work, so there is no endpoint that
+ * creates one directly.
+ */
+export async function apiRecordApiKeyDeletedSystemTask(
+  api: APIRequestContext,
+  name: string,
+): Promise<void> {
+  const createRes = await api.post('/api/apiKey/', {
+    data: { name, description: 'e2e system task seed', scope: 'r' },
+  });
+  if (!createRes.ok()) {
+    throw new Error(`create api key failed: HTTP ${createRes.status()}`);
+  }
+
+  const listRes = await api.post('/api/apiKey/paged', {
+    data: {
+      page: 1,
+      pageSize: 100,
+      orderBy: 'created_at',
+      sortDirection: 'desc',
+      filter: { associatedApiKeys: 'MINE' },
+    },
+  });
+  if (!listRes.ok()) {
+    throw new Error(`list api keys failed: HTTP ${listRes.status()}`);
+  }
+
+  const keys = ((await listRes.json()).data ?? []) as { id: string; name: string }[];
+  const key = keys.find((k) => k.name === name);
+  if (!key) {
+    throw new Error(`api key ${name} not found after create`);
+  }
+
+  const deleteRes = await api.delete(`/api/apiKey/${key.id}`);
+  if (!deleteRes.ok()) {
+    throw new Error(`delete api key failed: HTTP ${deleteRes.status()}`);
+  }
+}
+
+/**
+ * Polls the activity feed until a QUICK_SCAN row for [groupId] is FAILED and
+ * still carries its upload, then returns it.
+ */
+export async function apiWaitForFailedQuickScan(
+  api: APIRequestContext,
+  groupId: number,
+  timeoutMs = 60_000,
+): Promise<{ id: number; hasSourceFile: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const res = await api.post('/api/systemTask/getPagedActivities', {
+      data: {
+        groupIds: [groupId],
+        orderBy: 'started_at',
+        sortDirection: 'desc',
+        page: 1,
+        pageSize: 25,
+      },
+    });
+    if (res.ok()) {
+      const paged = (await res.json()) as {
+        data: { id: number; type: string; status: string; hasSourceFile: boolean }[];
+      };
+      const failed = paged.data.find(
+        (activity) => activity.type === 'QUICK_SCAN' && activity.status === 'FAILED',
+      );
+      if (failed?.hasSourceFile) {
+        return failed;
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw new Error(`no failed quick scan with a source file appeared for group ${groupId}`);
+}
+
+/** Deletes a receipt-processing configuration and its prompt. */
+export async function apiDeleteProcessingSettings(
+  api: APIRequestContext,
+  settingsId: number,
+  promptId: number,
+): Promise<void> {
+  await api.delete(`/api/receiptProcessingSettings/${settingsId}`);
+  await api.delete(`/api/prompt/${promptId}`);
+}
+
+/**
+ * Reads a page of system tasks through the same endpoint the table uses, so a
+ * spec can assert the server actually narrowed rather than only that the UI
+ * rendered. [filter] is a `SystemTaskPagedRequestFilter`.
+ */
+export async function apiPagedSystemTasks(
+  api: APIRequestContext,
+  filter: Record<string, unknown> = {},
+): Promise<{ totalCount: number; data: Record<string, any>[] }> {
+  const res = await api.post('/api/systemTask/getPagedSystemTasks', {
+    data: {
+      page: 1,
+      pageSize: 100,
+      orderBy: 'started_at',
+      sortDirection: 'desc',
+      filter,
+    },
+  });
+  if (!res.ok()) {
+    throw new Error(`paged system tasks failed: HTTP ${res.status()}`);
+  }
+
+  const body = await res.json();
+  return { totalCount: body.totalCount, data: body.data ?? [] };
 }

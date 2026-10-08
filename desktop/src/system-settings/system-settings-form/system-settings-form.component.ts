@@ -1,5 +1,5 @@
 import { AfterViewInit, Component, ElementRef, OnInit, viewChild } from "@angular/core";
-import { FormArray, FormBuilder, FormGroup, Validators } from "@angular/forms";
+import { FormArray, FormBuilder, FormGroup, ValidatorFn, Validators } from "@angular/forms";
 import { ActivatedRoute, Router } from "@angular/router";
 import { UntilDestroy, untilDestroyed } from "@ngneat/until-destroy";
 import { Store } from "@ngxs/store";
@@ -21,6 +21,8 @@ import { InputReadonlyPipe } from "../../pipes/input-readonly.pipe";
 import { SnackbarService } from "../../services";
 import { SetFeatureConfig } from "../../store";
 import { SetCurrencyData, SetCurrencyDisplay } from "../../store/system-settings.state.actions";
+import { DurationUnit, maxForUnit, minForUnit, splitHours, toHours } from "../../utils";
+import { absoluteUrlValidator, durationValueValidator } from "../../validators";
 
 interface QueueData extends FormOption {
   description: string;
@@ -61,13 +63,43 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
     },
     {
       value: QueueName.EmailReceiptImageCleanup,
-      displayValue: "Email Receipt Image Cleanup",
-      description: "Cleans up email receipt images after all processing is done"
+      displayValue: "Email Receipt Image Cleanup (retired)",
+      description: "No longer used. Temporary file cleanup moved to System Clean Up."
     },
     {
       value: QueueName.QuickScan,
       displayValue: "Quick Scan",
       description: "Processes quick scan receipts"
+    },
+    {
+      value: QueueName.SystemCleanUp,
+      displayValue: "System Clean Up",
+      description: "Expires refresh tokens and reclaims temporary files"
+    }
+  ];
+
+  // The backend caps a refresh-token lifetime at 720 hours (30 days) and treats
+  // 0 as "unset, use the default". Mirrored here so the form rejects what the
+  // server would reject.
+  public static readonly MAX_TOKEN_LIFETIME_HOURS = 720;
+
+  // Temp-file retention has its own, much wider bounds — do not reuse the token
+  // cap above. 24 hours is a real floor on the server, so it is enforced here
+  // too or the entry fails with a bare 400 and no message on the field.
+  public static readonly MIN_TEMP_FILE_RETENTION_HOURS = 24;
+
+  public static readonly MAX_TEMP_FILE_RETENTION_HOURS = 8760;
+
+  public static readonly DEFAULT_TEMP_FILE_RETENTION_HOURS = 720;
+
+  public readonly durationUnits: FormOption[] = [
+    {
+      displayValue: "Hours",
+      value: "HOURS"
+    },
+    {
+      displayValue: "Days",
+      value: "DAYS"
     }
   ];
 
@@ -125,6 +157,15 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
   }
 
   private initForm(): void {
+    const refreshTokenLifetime = splitHours(this.originalSystemSettings?.refreshTokenValidForHours);
+    const mcpRefreshTokenLifetime = splitHours(this.originalSystemSettings?.mcpRefreshTokenValidForHours);
+    // splitHours falls back to 24 hours for an unset value, which would render
+    // this setting as "1 Days". Its own default is 720, so substitute that
+    // first — the server reads 0 the same way.
+    const tempFileRetention = splitHours(
+      this.originalSystemSettings?.tempFileRetentionHours || SystemSettingsFormComponent.DEFAULT_TEMP_FILE_RETENTION_HOURS
+    );
+
     this.form = this.formBuilder.group({
       enableLocalSignUp: [this.originalSystemSettings?.enableLocalSignUp],
       debugOcr: [this.originalSystemSettings?.debugOcr],
@@ -141,6 +182,16 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
       taskQueueConfigurations: this.formBuilder.array(this.buildAsynqQueueConfigurations()),
       mcpEnabled: [this.originalSystemSettings?.mcpEnabled],
       mcpPublicUrl: [this.originalSystemSettings?.mcpPublicUrl],
+      showLoginQr: [this.originalSystemSettings?.showLoginQr],
+      mobileServerUrl: [this.originalSystemSettings?.mobileServerUrl],
+      // Form-only controls. The API stores hours; the unit is presentation and
+      // is folded back into `<name>Hours` in submit().
+      refreshTokenValidForValue: [refreshTokenLifetime.value],
+      refreshTokenValidForUnit: [refreshTokenLifetime.unit],
+      mcpRefreshTokenValidForValue: [mcpRefreshTokenLifetime.value],
+      mcpRefreshTokenValidForUnit: [mcpRefreshTokenLifetime.unit],
+      tempFileRetentionValue: [tempFileRetention.value],
+      tempFileRetentionUnit: [tempFileRetention.unit],
     });
 
     if (this.inputReadonlyPipe.transform(this.formConfig.mode)) {
@@ -152,11 +203,66 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
       this.form.get("currencyHideDecimalPlaces")?.disable();
       this.form.get("mcpEnabled")?.disable();
       this.form.get("mcpPublicUrl")?.disable();
+      this.form.get("showLoginQr")?.disable();
+      this.form.get("mobileServerUrl")?.disable();
+      this.form.get("refreshTokenValidForValue")?.disable();
+      this.form.get("refreshTokenValidForUnit")?.disable();
+      this.form.get("mcpRefreshTokenValidForValue")?.disable();
+      this.form.get("mcpRefreshTokenValidForUnit")?.disable();
+      this.form.get("tempFileRetentionValue")?.disable();
+      this.form.get("tempFileRetentionUnit")?.disable();
     }
 
     this.listenForReceiptProcessingSettingsChanges();
     this.listenForHideDecimalPlacesChanges();
     this.listenForMcpEnabledChanges();
+    this.listenForShowLoginQrChanges();
+    this.listenForDurationUnitChanges(
+      "refreshTokenValidForValue",
+      "refreshTokenValidForUnit",
+      SystemSettingsFormComponent.MAX_TOKEN_LIFETIME_HOURS
+    );
+    this.listenForDurationUnitChanges(
+      "mcpRefreshTokenValidForValue",
+      "mcpRefreshTokenValidForUnit",
+      SystemSettingsFormComponent.MAX_TOKEN_LIFETIME_HOURS
+    );
+    this.listenForDurationUnitChanges(
+      "tempFileRetentionValue",
+      "tempFileRetentionUnit",
+      SystemSettingsFormComponent.MAX_TEMP_FILE_RETENTION_HOURS,
+      SystemSettingsFormComponent.MIN_TEMP_FILE_RETENTION_HOURS
+    );
+  }
+
+  // The bounds depend on the selected unit (720 hours === 30 days), so the value
+  // control's validators are re-applied whenever the unit flips. Like
+  // urlValidators() below, setValidators replaces the whole list, so required
+  // has to be re-supplied each time rather than declared in initForm.
+  //
+  // The bounds are parameters rather than the token cap this once hardcoded:
+  // temp-file retention runs to a year and has a real floor of its own.
+  private listenForDurationUnitChanges(
+    valueControlName: string,
+    unitControlName: string,
+    maxHours: number,
+    minHours: number = 1
+  ): void {
+    const valueControl = this.form.get(valueControlName);
+
+    this.form.get(unitControlName)?.valueChanges
+      .pipe(
+        startWith(this.form.get(unitControlName)?.value),
+        untilDestroyed(this),
+        tap((unit: DurationUnit) => {
+          valueControl?.setValidators([
+            Validators.required,
+            durationValueValidator(maxForUnit(maxHours, unit), minForUnit(minHours, unit)),
+          ]);
+          valueControl?.updateValueAndValidity({ emitEvent: false });
+        })
+      )
+      .subscribe();
   }
 
   // TODO: finish implementing UI for taskQueueConfigurations
@@ -202,7 +308,9 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
   }
 
   // A public URL is required to enable the MCP server, mirroring the backend
-  // validation. The control's validators are toggled with the enable flag.
+  // validation. The control's validators are toggled with the enable flag; the
+  // format check stays on either way because the backend validates a non-empty
+  // URL regardless of the toggle.
   private listenForMcpEnabledChanges(): void {
     const mcpPublicUrl = this.form.get("mcpPublicUrl");
 
@@ -211,11 +319,36 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
         startWith(this.form.get("mcpEnabled")?.value),
         untilDestroyed(this),
         tap((enabled: boolean) => {
-          mcpPublicUrl?.setValidators(enabled ? [Validators.required] : []);
+          mcpPublicUrl?.setValidators(this.urlValidators(enabled));
           mcpPublicUrl?.updateValueAndValidity({ emitEvent: false });
         })
       )
       .subscribe();
+  }
+
+  // A mobile server URL is required to show the login QR code, mirroring the
+  // backend validation. The control's validators track the toggle.
+  private listenForShowLoginQrChanges(): void {
+    const mobileServerUrl = this.form.get("mobileServerUrl");
+
+    this.form.get("showLoginQr")?.valueChanges
+      .pipe(
+        startWith(this.form.get("showLoginQr")?.value),
+        untilDestroyed(this),
+        tap((enabled: boolean) => {
+          mobileServerUrl?.setValidators(this.urlValidators(enabled));
+          mobileServerUrl?.updateValueAndValidity({ emitEvent: false });
+        })
+      )
+      .subscribe();
+  }
+
+  // setValidators replaces the whole list, so the format check has to be
+  // re-supplied on every toggle rather than declared once in initForm.
+  private urlValidators(required: boolean): ValidatorFn[] {
+    return required
+      ? [Validators.required, absoluteUrlValidator()]
+      : [absoluteUrlValidator()];
   }
 
   public displayWith(id: number): string {
@@ -239,6 +372,26 @@ export class SystemSettingsFormComponent extends BaseFormComponent implements On
 
   public submit(): void {
     const formValue = this.form.getRawValue();
+    // Fold the value/unit pairs back into the hours the API stores, then drop
+    // the presentation-only controls so they never reach the wire.
+    formValue["refreshTokenValidForHours"] = toHours(
+      formValue["refreshTokenValidForValue"],
+      formValue["refreshTokenValidForUnit"]
+    );
+    formValue["mcpRefreshTokenValidForHours"] = toHours(
+      formValue["mcpRefreshTokenValidForValue"],
+      formValue["mcpRefreshTokenValidForUnit"]
+    );
+    formValue["tempFileRetentionHours"] = toHours(
+      formValue["tempFileRetentionValue"],
+      formValue["tempFileRetentionUnit"]
+    );
+    delete formValue["refreshTokenValidForValue"];
+    delete formValue["refreshTokenValidForUnit"];
+    delete formValue["mcpRefreshTokenValidForValue"];
+    delete formValue["mcpRefreshTokenValidForUnit"];
+    delete formValue["tempFileRetentionValue"];
+    delete formValue["tempFileRetentionUnit"];
     formValue["emailPollingInterval"] = Number.parseInt(formValue["emailPollingInterval"]);
     formValue["taskConcurrency"] = Number.parseInt(formValue["taskConcurrency"]);
     formValue["pdfDpi"] = Number.parseInt(formValue["pdfDpi"]);

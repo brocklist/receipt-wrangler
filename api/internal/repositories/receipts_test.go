@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"encoding/json"
 	"github.com/shopspring/decimal"
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/models"
@@ -116,6 +117,75 @@ func TestShouldCreateReceipt(t *testing.T) {
 
 	if createdReceipt.Status != models.OPEN {
 		utils.PrintTestError(t, createdReceipt.Status, models.OPEN)
+	}
+}
+
+// failingReceiptCommand fails its insert inside CreateReceipt's transaction: the
+// status passes ToReceipt but is rejected by ReceiptStatus.Value().
+func failingReceiptCommand() commands.UpsertReceiptCommand {
+	return commands.UpsertReceiptCommand{
+		Name:         "Failing Receipt",
+		Amount:       decimal.NewFromFloat(10),
+		Date:         time.Now(),
+		PaidByUserID: 1,
+		Status:       models.ReceiptStatus("NOT_A_STATUS"),
+		GroupId:      1,
+	}
+}
+
+func getReceiptUploadedTasks() []models.SystemTask {
+	var tasks []models.SystemTask
+	GetDB().Where("type = ?", models.RECEIPT_UPLOADED).Find(&tasks)
+	return tasks
+}
+
+// A failed manual create records a parentless FAILED RECEIPT_UPLOADED task, which
+// is what makes it visible on the admin System Tasks page.
+func TestCreateReceiptRecordsFailedUploadTaskWhenItOwnsTheTask(t *testing.T) {
+	defer teardownReceiptTest()
+	setupReceiptTest()
+
+	_, err := NewReceiptRepository(nil).CreateReceipt(failingReceiptCommand(), 1, true)
+	if err == nil {
+		utils.PrintTestError(t, err, "an error")
+		return
+	}
+
+	tasks := getReceiptUploadedTasks()
+	if len(tasks) != 1 {
+		utils.PrintTestError(t, len(tasks), 1)
+		return
+	}
+
+	task := tasks[0]
+	if task.Status != models.SYSTEM_TASK_FAILED {
+		utils.PrintTestError(t, task.Status, models.SYSTEM_TASK_FAILED)
+	}
+	if task.ResultDescription != err.Error() {
+		utils.PrintTestError(t, task.ResultDescription, err.Error())
+	}
+	if task.RanByUserId == nil || *task.RanByUserId != 1 {
+		utils.PrintTestError(t, task.RanByUserId, 1)
+	}
+	if task.AssociatedSystemTaskId != nil {
+		utils.PrintTestError(t, task.AssociatedSystemTaskId, nil)
+	}
+}
+
+// Quick scan and email pass createSystemTask=false and record the failure
+// themselves, so CreateReceipt must not add a second, parentless one.
+func TestCreateReceiptLeavesFailedUploadTaskToTheCaller(t *testing.T) {
+	defer teardownReceiptTest()
+	setupReceiptTest()
+
+	_, err := NewReceiptRepository(nil).CreateReceipt(failingReceiptCommand(), 1, false)
+	if err == nil {
+		utils.PrintTestError(t, err, "an error")
+		return
+	}
+
+	if tasks := getReceiptUploadedTasks(); len(tasks) != 0 {
+		utils.PrintTestError(t, len(tasks), 0)
 	}
 }
 
@@ -332,7 +402,7 @@ func TestShouldGetPagedReceiptsByGroupId(t *testing.T) {
 		},
 	}
 
-	receipts, count, err := repository.GetPagedReceiptsByGroupId(1, "1", pagedRequest, nil, nil)
+	receipts, count, err := repository.GetPagedReceiptsByGroupId(1, "1", pagedRequest, nil, nil, nil, nil, nil)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -369,7 +439,7 @@ func TestGetPagedReceiptsAppliesPaidByVisibilitySingleGroup(t *testing.T) {
 	restrictedToUser1 := func(groupId uint) ([]uint, bool, error) {
 		return []uint{1}, false, nil
 	}
-	receipts, count, err := repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, restrictedToUser1)
+	receipts, count, err := repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, restrictedToUser1, nil, nil, nil)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -385,7 +455,7 @@ func TestGetPagedReceiptsAppliesPaidByVisibilitySingleGroup(t *testing.T) {
 	unrestricted := func(groupId uint) ([]uint, bool, error) {
 		return nil, true, nil
 	}
-	_, count, err = repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, unrestricted)
+	_, count, err = repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, unrestricted, nil, nil, nil)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -398,7 +468,7 @@ func TestGetPagedReceiptsAppliesPaidByVisibilitySingleGroup(t *testing.T) {
 	seeNothing := func(groupId uint) ([]uint, bool, error) {
 		return []uint{}, false, nil
 	}
-	receipts, count, err = repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, seeNothing)
+	receipts, count, err = repository.GetPagedReceiptsByGroupId(1, "1", pagedRequestAllReceipts(), nil, seeNothing, nil, nil, nil)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -453,7 +523,7 @@ func TestGetPagedReceiptsAppliesPaidByVisibilityAllGroup(t *testing.T) {
 	}
 
 	repository := NewReceiptRepository(nil)
-	receipts, count, err := repository.GetPagedReceiptsByGroupId(member.ID, utils.UintToString(allGroup.ID), pagedRequestAllReceipts(), nil, resolver)
+	receipts, count, err := repository.GetPagedReceiptsByGroupId(member.ID, utils.UintToString(allGroup.ID), pagedRequestAllReceipts(), nil, resolver, nil, nil, nil)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -651,7 +721,7 @@ func TestGetPagedReceiptsAppliesGroupFilter(t *testing.T) {
 
 	// All-groups view filtered to group1: only group1's receipts return.
 	receipts, count, err := repository.GetPagedReceiptsByGroupId(
-		member.ID, utils.UintToString(allGroup.ID), groupFilterRequest(group1.ID), nil, nil,
+		member.ID, utils.UintToString(allGroup.ID), groupFilterRequest(group1.ID), nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
@@ -675,7 +745,7 @@ func TestGetPagedReceiptsAppliesGroupFilter(t *testing.T) {
 	// mandatory member-group scope excludes it, so nothing leaks even though the
 	// group has a receipt.
 	_, count, err = repository.GetPagedReceiptsByGroupId(
-		member.ID, utils.UintToString(allGroup.ID), groupFilterRequest(otherGroup.ID), nil, nil,
+		member.ID, utils.UintToString(allGroup.ID), groupFilterRequest(otherGroup.ID), nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
@@ -689,7 +759,7 @@ func TestGetPagedReceiptsAppliesGroupFilter(t *testing.T) {
 	// the group filter intersect to nothing, so a user cannot surface another
 	// group's receipts through the filter.
 	_, count, err = repository.GetPagedReceiptsByGroupId(
-		member.ID, utils.UintToString(group1.ID), groupFilterRequest(group2.ID), nil, nil,
+		member.ID, utils.UintToString(group1.ID), groupFilterRequest(group2.ID), nil, nil, nil, nil, nil,
 	)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
@@ -1620,5 +1690,175 @@ func TestShouldCleanupJunctionTablesForOrphanedItems(t *testing.T) {
 	totalJunctionEntries := finalCategoriesCount + finalTagsCount + finalLinkedCategoriesCount + finalLinkedTagsCount
 	if totalJunctionEntries != 0 {
 		utils.PrintTestError(t, totalJunctionEntries, 0)
+	}
+}
+
+// DECLINED is terminal like RESOLVED: it settles the receipt's items so the receipt stops
+// counting toward what members owe each other. Unlike RESOLVED it must NOT stamp
+// resolved_date — a decline is not a resolution, and reports expose that column.
+func TestAfterReceiptUpdatedSettlesItemsForDeclinedReceipt(t *testing.T) {
+	defer teardownReceiptTest()
+	setupReceiptTest()
+	createTestReceipts()
+	createTestItems()
+
+	repository := NewReceiptRepository(nil)
+	db := GetDB()
+
+	// Seed a resolved_date so the assertion below proves it is actively cleared.
+	alreadyResolved := time.Now().UTC()
+	err := db.Table("receipts").Where("id = ?", 1).Update("resolved_date", alreadyResolved).Error
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	var receipt models.Receipt
+	db.First(&receipt, 1)
+	receipt.Status = models.DECLINED
+	receipt.ResolvedDate = &alreadyResolved
+
+	err = repository.AfterReceiptUpdated(&receipt)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	var items []models.Item
+	db.Where("receipt_id = ?", receipt.ID).Find(&items)
+	if len(items) == 0 {
+		utils.PrintTestError(t, len(items), "at least one item")
+		return
+	}
+	for _, item := range items {
+		if item.Status != models.ITEM_RESOLVED {
+			utils.PrintTestError(t, item.Status, models.ITEM_RESOLVED)
+		}
+	}
+
+	var refreshed models.Receipt
+	db.First(&refreshed, 1)
+	if refreshed.ResolvedDate != nil {
+		utils.PrintTestError(t, refreshed.ResolvedDate, nil)
+	}
+}
+
+// The RECEIPT_UPDATED system task stores a before/after pair that the desktop
+// renders as a diff, so both sides must be loaded to the same depth. The
+// "before" side used to be loaded one level deep, which made every update look
+// like it added item categories/tags, linked items and custom field
+// definitions, and listed linked items as top-level items.
+func TestUpdateReceiptSystemTaskSnapshotsAreLoadedToTheSameDepth(t *testing.T) {
+	defer teardownReceiptTest()
+	setupReceiptTest()
+
+	db := GetDB()
+	customField := models.CustomField{Name: "PO Number", Type: models.TEXT}
+	db.Create(&customField)
+
+	poNumber := "1182"
+	items := []commands.UpsertItemCommand{
+		{
+			Name:            "Main Item",
+			Amount:          decimal.NewFromFloat(50.00),
+			ChargedToUserId: uintPtr(2),
+			Status:          models.ITEM_OPEN,
+			Categories:      []commands.UpsertCategoryCommand{{Id: uintPtr(1)}},
+			LinkedItems: []commands.UpsertItemCommand{
+				{
+					Name:            "Linked Item",
+					Amount:          decimal.NewFromFloat(10.00),
+					ChargedToUserId: uintPtr(3),
+					Status:          models.ITEM_OPEN,
+				},
+			},
+		},
+	}
+	command := commands.UpsertReceiptCommand{
+		Name:         "Before Name",
+		Amount:       decimal.NewFromFloat(50.00),
+		Date:         time.Now(),
+		PaidByUserID: 1,
+		Status:       models.OPEN,
+		GroupId:      1,
+		Items:        items,
+		CustomFields: []commands.UpsertCustomFieldValueCommand{
+			{CustomFieldId: customField.ID, StringValue: &poNumber},
+		},
+	}
+
+	repository := NewReceiptRepository(nil)
+	createdReceipt, err := repository.CreateReceipt(command, 1, false)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	// An update carries the receipt id on every item, which the handler's
+	// validation requires; a linked item without it fails its foreign key.
+	command.Name = "After Name"
+	command.Items[0].ReceiptId = createdReceipt.ID
+	command.Items[0].LinkedItems[0].ReceiptId = createdReceipt.ID
+	_, err = repository.UpdateReceipt(utils.UintToString(createdReceipt.ID), command, 1)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	var systemTask models.SystemTask
+	err = db.Where("type = ? AND associated_entity_id = ?", models.RECEIPT_UPDATED, createdReceipt.ID).
+		First(&systemTask).Error
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	var description struct {
+		Before  string `json:"before"`
+		After   string `json:"after"`
+		Version int    `json:"version"`
+	}
+	err = json.Unmarshal([]byte(systemTask.ResultDescription), &description)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	// The desktop trusts "before" only from version 2 on; an unversioned row is
+	// read as version 1, whose "before" is incomplete. Pinned to the literal so
+	// a bump has to be a deliberate change here and on the desktop.
+	if description.Version != 2 {
+		utils.PrintTestError(t, description.Version, 2)
+	}
+
+	var before, after models.Receipt
+	if err = json.Unmarshal([]byte(description.Before), &before); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	if err = json.Unmarshal([]byte(description.After), &after); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	if before.Name != "Before Name" || after.Name != "After Name" {
+		utils.PrintTestError(t, before.Name+" -> "+after.Name, "Before Name -> After Name")
+	}
+
+	for side, receipt := range map[string]models.Receipt{"before": before, "after": after} {
+		if len(receipt.ReceiptItems) != 1 {
+			t.Errorf("%s: expected linked items to be filtered out of the top level, got %d items", side, len(receipt.ReceiptItems))
+			continue
+		}
+		item := receipt.ReceiptItems[0]
+		if len(item.Categories) != 1 {
+			t.Errorf("%s: expected the item's category to be loaded, got %d", side, len(item.Categories))
+		}
+		if len(item.LinkedItems) != 1 {
+			t.Errorf("%s: expected the item's linked item to be loaded, got %d", side, len(item.LinkedItems))
+		}
+		if len(receipt.CustomFields) != 1 || receipt.CustomFields[0].CustomField.Name != "PO Number" {
+			t.Errorf("%s: expected the custom field definition to be loaded, got %+v", side, receipt.CustomFields)
+		}
 	}
 }

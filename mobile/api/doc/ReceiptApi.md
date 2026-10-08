@@ -11,9 +11,11 @@ Method | HTTP request | Description
 ------------- | ------------- | -------------
 [**bulkReceiptStatusUpdate**](ReceiptApi.md#bulkreceiptstatusupdate) | **POST** /receipt/bulkStatusUpdate | Bulk receipt status update
 [**createReceipt**](ReceiptApi.md#createreceipt) | **POST** /receipt/ | Create receipt
+[**createReceiptWithFiles**](ReceiptApi.md#createreceiptwithfiles) | **POST** /receipt/withFiles | Create receipt with files
 [**deleteReceiptById**](ReceiptApi.md#deletereceiptbyid) | **DELETE** /receipt/{receiptId} | Delete receipt
 [**duplicateReceipt**](ReceiptApi.md#duplicatereceipt) | **POST** /receipt/{receiptId}/duplicate | Duplicate receipt
 [**getReceiptById**](ReceiptApi.md#getreceiptbyid) | **GET** /receipt/{receiptId} | Get receipt
+[**getReceiptSummaryForGroup**](ReceiptApi.md#getreceiptsummaryforgroup) | **POST** /receipt/group/{groupId}/summary | Gets the receipt summary for a group
 [**getReceiptsForGroup**](ReceiptApi.md#getreceiptsforgroup) | **POST** /receipt/group/{groupId} | Gets receipts
 [**hasAccessToReceipt**](ReceiptApi.md#hasaccesstoreceipt) | **GET** /receipt/hasAccess | Has access to receipt
 [**quickScanReceipt**](ReceiptApi.md#quickscanreceipt) | **POST** /receipt/quickScan | Quick scan a receipt
@@ -72,7 +74,7 @@ Name | Type | Description  | Notes
 
 Create receipt
 
-This will create a receipt [SYSTEM USER]
+This will create a receipt [SYSTEM USER]. Deprecated in favour of createReceiptWithFiles, which carries the receipt's images in the same call; kept for already-released clients. It enforces the caller's role-required fields, so when the caller's group role requires an image this endpoint always returns 400 (it cannot carry one).
 
 ### Example
 ```dart
@@ -110,6 +112,55 @@ Name | Type | Description  | Notes
 ### HTTP request headers
 
  - **Content-Type**: application/json
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
+# **createReceiptWithFiles**
+> Receipt createReceiptWithFiles(receipt, files)
+
+Create receipt with files
+
+Creates a receipt, its comments and its images in one atomic call: a failure anywhere leaves no receipt, image or file behind. Requires group.receipts.create in the receipt's group. Every file must be an image or PDF (checked before anything is written). Returns 400 when the caller's group role requires a comment (key `comments`) or an image (key `files`) that the request does not carry. [SYSTEM USER]
+
+### Example
+```dart
+import 'package:openapi/api.dart';
+// TODO Configure API key authorization: apiKeyAuth
+//defaultApiClient.getAuthentication<ApiKeyAuth>('apiKeyAuth').apiKey = 'YOUR_API_KEY';
+// uncomment below to setup prefix (e.g. Bearer) for API key, if needed
+//defaultApiClient.getAuthentication<ApiKeyAuth>('apiKeyAuth').apiKeyPrefix = 'Bearer';
+
+final api = Openapi().getReceiptApi();
+final UpsertReceiptCommand receipt = ; // UpsertReceiptCommand | 
+final BuiltList<MultipartFile> files = /path/to/file.txt; // BuiltList<MultipartFile> | Images (or PDFs) to attach to the new receipt. Together with the receipt they share the server's 50 MB request body limit.
+
+try {
+    final response = api.createReceiptWithFiles(receipt, files);
+    print(response);
+} catch on DioException (e) {
+    print('Exception when calling ReceiptApi->createReceiptWithFiles: $e\n');
+}
+```
+
+### Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+ **receipt** | [**UpsertReceiptCommand**](UpsertReceiptCommand.md)|  | 
+ **files** | [**BuiltList&lt;MultipartFile&gt;**](MultipartFile.md)| Images (or PDFs) to attach to the new receipt. Together with the receipt they share the server's 50 MB request body limit. | [optional] 
+
+### Return type
+
+[**Receipt**](Receipt.md)
+
+### Authorization
+
+[apiKeyAuth](../README.md#apiKeyAuth), [bearerAuth](../README.md#bearerAuth)
+
+### HTTP request headers
+
+ - **Content-Type**: multipart/form-data
  - **Accept**: application/json
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
@@ -253,6 +304,55 @@ Name | Type | Description  | Notes
 
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
+# **getReceiptSummaryForGroup**
+> ReceiptSummary getReceiptSummaryForGroup(groupId, receiptSummaryCommand)
+
+Gets the receipt summary for a group
+
+Returns the block of totals rendered under the receipts table: a receipt count and amount total over the WHOLE filtered result set (not the current page), then the same figures per configured status. Which statuses break out and which currency custom fields are totalled come from the group's receipt settings, not from the request. Gated on group.receipts.read, the same permission as the receipts it aggregates. [SYSTEM USER]
+
+### Example
+```dart
+import 'package:openapi/api.dart';
+// TODO Configure API key authorization: apiKeyAuth
+//defaultApiClient.getAuthentication<ApiKeyAuth>('apiKeyAuth').apiKey = 'YOUR_API_KEY';
+// uncomment below to setup prefix (e.g. Bearer) for API key, if needed
+//defaultApiClient.getAuthentication<ApiKeyAuth>('apiKeyAuth').apiKeyPrefix = 'Bearer';
+
+final api = Openapi().getReceiptApi();
+final int groupId = 56; // int | Summarize the receipts that belong to groupId
+final ReceiptSummaryCommand receiptSummaryCommand = ; // ReceiptSummaryCommand | 
+
+try {
+    final response = api.getReceiptSummaryForGroup(groupId, receiptSummaryCommand);
+    print(response);
+} catch on DioException (e) {
+    print('Exception when calling ReceiptApi->getReceiptSummaryForGroup: $e\n');
+}
+```
+
+### Parameters
+
+Name | Type | Description  | Notes
+------------- | ------------- | ------------- | -------------
+ **groupId** | **int**| Summarize the receipts that belong to groupId | 
+ **receiptSummaryCommand** | [**ReceiptSummaryCommand**](ReceiptSummaryCommand.md)|  | 
+
+### Return type
+
+[**ReceiptSummary**](ReceiptSummary.md)
+
+### Authorization
+
+[apiKeyAuth](../README.md#apiKeyAuth), [bearerAuth](../README.md#bearerAuth)
+
+### HTTP request headers
+
+ - **Content-Type**: application/json
+ - **Accept**: application/json
+
+[[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
+
 # **getReceiptsForGroup**
 > PagedData getReceiptsForGroup(groupId, receiptPagedRequestCommand)
 
@@ -351,7 +451,7 @@ void (empty response body)
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to Model list]](../README.md#documentation-for-models) [[Back to README]](../README.md)
 
 # **quickScanReceipt**
-> quickScanReceipt(files, groupIds, paidByUserIds, statuses, categoryIds, tagIds)
+> quickScanReceipt(files, groupIds, paidByUserIds, statuses, categoryIds, tagIds, comments)
 
 Quick scan a receipt
 
@@ -372,9 +472,10 @@ final BuiltList<int> paidByUserIds = ; // BuiltList<int> |
 final BuiltList<ReceiptStatus> statuses = ; // BuiltList<ReceiptStatus> | 
 final BuiltList<String> categoryIds = ; // BuiltList<String> | 
 final BuiltList<String> tagIds = ; // BuiltList<String> | 
+final BuiltList<String> comments = ; // BuiltList<String> | 
 
 try {
-    api.quickScanReceipt(files, groupIds, paidByUserIds, statuses, categoryIds, tagIds);
+    api.quickScanReceipt(files, groupIds, paidByUserIds, statuses, categoryIds, tagIds, comments);
 } catch on DioException (e) {
     print('Exception when calling ReceiptApi->quickScanReceipt: $e\n');
 }
@@ -390,6 +491,7 @@ Name | Type | Description  | Notes
  **statuses** | [**BuiltList&lt;ReceiptStatus&gt;**](ReceiptStatus.md)|  | 
  **categoryIds** | [**BuiltList&lt;String&gt;**](String.md)|  | [optional] 
  **tagIds** | [**BuiltList&lt;String&gt;**](String.md)|  | [optional] 
+ **comments** | [**BuiltList&lt;String&gt;**](String.md)|  | [optional] 
 
 ### Return type
 

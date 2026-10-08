@@ -10,6 +10,7 @@ export interface QuickScanSubmission {
   status?: ReceiptStatus;
   categoryIds: number[];
   tagIds: number[];
+  comment?: string;
 }
 
 export interface LocalQuickScanTask {
@@ -21,6 +22,7 @@ export interface LocalQuickScanTask {
   status?: QuickScanSubmission["status"];
   categoryIds: number[];
   tagIds: number[];
+  comment?: string;
   taskId?: number;
   registering: boolean;
   sending: boolean;

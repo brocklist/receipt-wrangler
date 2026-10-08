@@ -13,18 +13,29 @@ import { FormArray, FormBuilder, FormControl, FormGroup } from "@angular/forms";
 import { MatDialog } from "@angular/material/dialog";
 import { Store } from "@ngxs/store";
 import { merge } from "rxjs";
+import { RECEIPT_DATE_FILTER_FIELDS, ReceiptDateFilterFieldKey } from "src/constants";
 import { DEFAULT_DIALOG_CONFIG } from "src/constants/dialog.constant";
 import { GroupState } from "src/store";
+import { BadgeTone, CUSTOM_FIELD_BADGE } from "src/shared-ui/badge/badge.component";
 import { ReportColumn, ReportDetail, ReportPeriod } from "../../open-api";
 import {
   REPORT_DOCUMENT_VARIABLES,
   REPORT_PERIOD_PRESETS,
   ReportField,
+  toFieldOptions,
 } from "../models/report-catalog.constants";
 import { CHIP_COLORS, groupInitials } from "../models/report-chip.util";
 import { isDimensionColumnDisabled, ReportColumnValue } from "../models/report-command.mapper";
-import { buildColumnGroup } from "../models/report-form.factory";
-import { formatPeriodRange, resolvePeriodRange } from "../models/report-period.util";
+import {
+  buildColumnGroup,
+  buildGroupByGroup,
+  readGroupByFields,
+} from "../models/report-form.factory";
+import {
+  formatPeriodRange,
+  reportPeriodDateFieldLabel,
+  resolvePeriodRange,
+} from "../models/report-period.util";
 import { ReportCatalogService } from "../services/report-catalog.service";
 import {
   AddGroupDialogComponent,
@@ -45,6 +56,7 @@ interface ScopeChip {
 interface GroupByLevel {
   index: number;
   label: string;
+  isCustom: boolean;
   isFirst: boolean;
   isLast: boolean;
 }
@@ -57,16 +69,29 @@ interface ColumnRow {
   kindLabel: string;
   kindIcon: string;
   kindClass: string;
+  kindTone: BadgeTone;
+  isCustom: boolean;
   isFirst: boolean;
   isLast: boolean;
   disabled: boolean;
   disabledReason: string;
 }
 
-const KIND_META: Record<ReportColumn.KindEnum, { label: string; icon: string; cssClass: string }> = {
-  dimension: { label: "Dim", icon: "sell", cssClass: "kind-dimension" },
-  aggregate: { label: "Agg", icon: "functions", cssClass: "kind-aggregate" },
-  formula: { label: "Formula", icon: "calculate", cssClass: "kind-formula" },
+// The id the grouping level's synthetic column carries into the picker. The
+// picker only reads it as "this is an edit, not a new column" (and hands it back
+// untouched), so it is a constant rather than a real row id.
+const GROUPING_LEVEL_COLUMN_ID = "grouping-level";
+
+// cssClass colours the row's icon chip, which sits on a known background and so
+// keeps its translucent fill; tone colours the badge, which is the shared
+// component and carries its own opaque one.
+const KIND_META: Record<
+  ReportColumn.KindEnum,
+  { label: string; icon: string; cssClass: string; tone: BadgeTone }
+> = {
+  dimension: { label: "Dim", icon: "sell", cssClass: "kind-dimension", tone: "slate" },
+  aggregate: { label: "Agg", icon: "functions", cssClass: "kind-aggregate", tone: "blue" },
+  formula: { label: "Formula", icon: "calculate", cssClass: "kind-formula", tone: "green" },
 };
 
 /**
@@ -103,7 +128,13 @@ export class ReportConfigPanelComponent implements OnInit {
     value: preset.id,
     displayValue: preset.label,
   }));
+  // The same fields, in the same order, as the receipts table's quick date filter.
+  public readonly periodDateFieldOptions = RECEIPT_DATE_FILTER_FIELDS.map((field) => ({
+    value: field.key,
+    displayValue: field.label,
+  }));
   public readonly documentVariables = REPORT_DOCUMENT_VARIABLES;
+  public readonly customFieldBadge = CUSTOM_FIELD_BADGE;
   public readonly ReportPeriodPreset = ReportPeriod.PresetEnum;
   public readonly ReportDetailMode = ReportDetail.ModeEnum;
 
@@ -112,9 +143,9 @@ export class ReportConfigPanelComponent implements OnInit {
   // into addGroupBy and is reset to the blank option afterward.
   public readonly addGroupControl = new FormControl<string | null>(null);
 
-  public readonly dimensionOptions = computed(() =>
-    this.dimensions().map((field) => ({ value: field.key, displayValue: field.label }))
-  );
+  public readonly dimensionOptions = computed(() => toFieldOptions(this.dimensions()));
+
+  public readonly addableDimensionOptions = computed(() => toFieldOptions(this.addableDimensions()));
 
   public readonly scopeChips = computed<ScopeChip[]>(() => {
     this.revision();
@@ -130,9 +161,12 @@ export class ReportConfigPanelComponent implements OnInit {
   public readonly groupByLevels = computed<GroupByLevel[]>(() => {
     this.revision();
     const controls = this.groupByArray.controls;
-    return controls.map((control, index) => ({
+    return controls.map((_, index) => ({
       index,
-      label: this.labelForField(control.value as string),
+      // A level renders as a leading column in the report, so it shows the
+      // heading that column will carry: the user's override when set.
+      label: this.headingForLevel(index),
+      isCustom: this.isCustomField(this.fieldForLevel(index)),
       isFirst: index === 0,
       isLast: index === controls.length - 1,
     }));
@@ -140,7 +174,7 @@ export class ReportConfigPanelComponent implements OnInit {
 
   public readonly addableDimensions = computed<ReportField[]>(() => {
     this.revision();
-    const used = new Set(this.groupByArray.controls.map((control) => control.value as string));
+    const used = new Set(readGroupByFields(this.groupByArray));
     return this.dimensions().filter((field) => !used.has(field.key));
   });
 
@@ -148,7 +182,7 @@ export class ReportConfigPanelComponent implements OnInit {
     this.revision();
     const mode = this.detailMode;
     const detailBy = this.form().get("detail.by")!.value as string;
-    const groupBy = this.groupByArray.controls.map((control) => control.value as string);
+    const groupBy = readGroupByFields(this.groupByArray);
     const controls = this.columnsArray.controls;
     return controls.map((control, index) => {
       const value = control.value as ReportColumnValue;
@@ -162,6 +196,8 @@ export class ReportConfigPanelComponent implements OnInit {
         kindLabel: meta.label,
         kindIcon: meta.icon,
         kindClass: meta.cssClass,
+        kindTone: meta.tone,
+        isCustom: this.columnReadsACustomField(value),
         isFirst: index === 0,
         isLast: index === controls.length - 1,
         disabled,
@@ -219,6 +255,13 @@ export class ReportConfigPanelComponent implements OnInit {
     return this.form().get("detail.mode")!.value;
   }
 
+  /** The label of the receipt date the period covers, shown in the hint. */
+  public periodDateFieldLabel(): string {
+    return reportPeriodDateFieldLabel(
+      this.form().get("period.dateField")!.value as ReceiptDateFilterFieldKey
+    );
+  }
+
   /** The resolved date window shown under the period picker (display only). */
   public periodLabel(): string {
     const start = this.form().get("period.startDate")!.value as Date | null;
@@ -259,8 +302,48 @@ export class ReportConfigPanelComponent implements OnInit {
     if (!key) {
       return;
     }
-    this.groupByArray.push(this.formBuilder.control(key));
+    this.groupByArray.push(buildGroupByGroup(this.formBuilder, key));
     this.bump();
+  }
+
+  /**
+   * Renames the column this grouping level renders as, through the same picker a
+   * regular dimension column uses — with its field locked, since the field is
+   * chosen by the grouping level itself. The override is dropped when the entered
+   * label is the field's own catalog label, so retyping the default resets it.
+   */
+  public openGroupingLabelPicker(index: number): void {
+    const level = this.groupByArray.at(index);
+    const field = this.fieldForLevel(index);
+    const data: ColumnPickerDialogData = {
+      dimensions: this.dimensions(),
+      measures: this.measures(),
+      existingColumns: this.columnsArray.controls.map(
+        (control) => control.value as ReportColumnValue
+      ),
+      // A grouping level *is* a dimension column, so it is handed to the picker as
+      // one: an id makes the picker treat it as an edit (seeding the label and
+      // opening straight on the dimension step) rather than a new column.
+      column: {
+        id: GROUPING_LEVEL_COLUMN_ID,
+        kind: ReportColumn.KindEnum.Dimension,
+        name: field,
+        label: this.headingForLevel(index),
+        field,
+      },
+      lockField: true,
+    };
+    this.dialog
+      .open(ColumnPickerDialogComponent, { ...DEFAULT_DIALOG_CONFIG, data })
+      .afterClosed()
+      .subscribe((result?: ReportColumnValue) => {
+        if (!result) {
+          return;
+        }
+        const label = result.label.trim();
+        level.get("label")!.setValue(label === this.labelForField(field) ? "" : label);
+        this.bump();
+      });
   }
 
   public moveGroupBy(index: number, delta: number): void {
@@ -329,6 +412,45 @@ export class ReportConfigPanelComponent implements OnInit {
 
   private labelForField(key: string): string {
     return this.dimensions().find((field) => field.key === key)?.label ?? key;
+  }
+
+  /** The engine field key the grouping level at [index] nests by. */
+  private fieldForLevel(index: number): string {
+    return this.groupByArray.at(index).get("field")!.value as string;
+  }
+
+  /**
+   * The heading the grouping level's column carries: the user's override when
+   * set, otherwise the field catalog's label. Mirrors the backend's
+   * buildDimensions, which resolves the same way when rendering the report.
+   */
+  private headingForLevel(index: number): string {
+    const override = ((this.groupByArray.at(index).get("label")!.value as string) ?? "").trim();
+    return override || this.labelForField(this.fieldForLevel(index));
+  }
+
+  /**
+   * Whether a field key names a custom field. Resolved through the catalog rather
+   * than by matching the key's shape, so a user who cannot read the custom-field
+   * pool (the catalog swallows that 403) sees no badge instead of a badge on a
+   * field the builder cannot even name.
+   */
+  private isCustomField(key: string): boolean {
+    const field =
+      this.dimensions().find((candidate) => candidate.key === key) ??
+      this.measures().find((candidate) => candidate.key === key);
+    return field?.isCustom === true;
+  }
+
+  /** A column is custom when the field it reads is — a dimension's or an aggregate's measure. */
+  private columnReadsACustomField(column: ReportColumnValue): boolean {
+    if (column.kind === ReportColumn.KindEnum.Dimension) {
+      return this.isCustomField(column.field ?? "");
+    }
+    if (column.kind === ReportColumn.KindEnum.Aggregate) {
+      return this.isCustomField(column.measure ?? "");
+    }
+    return false;
   }
 
   private describeColumn(column: ReportColumnValue): string {

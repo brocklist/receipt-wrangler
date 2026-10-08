@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_form_builder/flutter_form_builder.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:receipt_wrangler_mobile/constants/receipt_entry.dart';
+import 'package:receipt_wrangler_mobile/receipts/widgets/receipt_comments.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/bottom_submit_button.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/receipt_edit_popup_menu.dart';
 
@@ -70,6 +73,44 @@ void scheduleReceiptCleanup(int receiptId) {
   });
 }
 
+/// The bottom-nav scan/add slot, whichever label it is currently wearing.
+///
+/// It reads "Scan" when Quick Scan can run for the caller and "Add" when it
+/// can't, so a spec that only cares about *reaching* the entry point must not
+/// pin the label. Inside a group two bottom navs are mounted (the group-select
+/// shell sits under the group shell), so two slots match; `.hitTestable()`
+/// targets the visible one.
+Finder scanNavSlot() => find
+    .byWidgetPredicate((w) =>
+        w is NavigationDestination && (w.label == 'Scan' || w.label == 'Add'))
+    .hitTestable();
+
+/// Opens the manual receipt form from the bottom-nav scan/add slot.
+///
+/// A **tap** on that slot is a direct action now -- it opens the document
+/// scanner when Quick Scan can run, and the manual form when it can't -- so
+/// manual entry is reached by **holding** it. The hold works on every screen and
+/// in every feature-flag state, unlike the receipts-screen overflow menu, which
+/// is why it is the path used here.
+///
+/// Pre-condition: the caller holds `group.receipts.create`, so the slot is
+/// present and the menu carries the entry.
+Future<void> openManualReceiptForm(WidgetTester tester) async {
+  await pumpUntilFound(tester, scanNavSlot());
+  await tester.longPress(scanNavSlot());
+
+  // The menu's items mount on the popup's first frame while it is still
+  // growing, so a tap computed then lands short and misses (observed as
+  // "Offset(411.6, 852.0) ... would not hit test"). Wait for hittability, then
+  // drain the animation.
+  await pumpUntilFound(tester, find.text('Add Manual Receipt').hitTestable());
+  for (int i = 0; i < 5; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  await tester.tap(find.text('Add Manual Receipt').hitTestable());
+  await pumpUntilFound(tester, find.text('Name'));
+}
+
 /// Drives the receipt-add UI from `/groups`: opens the bottom-nav Add
 /// menu, fills the required fields, taps Submit, waits for navigation
 /// to `/receipts/<id>/view`. Returns the new receipt's id.
@@ -85,21 +126,7 @@ Future<int> addManualReceiptViaUI(
   String amount = '12.34',
   String groupName = 'My Receipts',
 }) async {
-  // Inside a group two bottom navs are mounted (the group-select shell sits
-  // under the group shell), so two "Add" destinations match; `.hitTestable()`
-  // taps the visible one. On group-select there is just one, so this is safe
-  // there too.
-  await tester.tap(find.text('Add').hitTestable());
-  // The add menu is a modal bottom sheet; its items mount on the slide-in's
-  // first frame while the sheet is still rising, so a tap computed then lands
-  // at the bottom edge and misses (observed as "Offset(411.6, 852.0) ...
-  // would not hit test"). Wait for hittability, then drain the slide-in.
-  await pumpUntilFound(tester, find.text('Add Manual Receipt').hitTestable());
-  for (int i = 0; i < 5; i++) {
-    await tester.pump(const Duration(milliseconds: 100));
-  }
-  await tester.tap(find.text('Add Manual Receipt').hitTestable());
-  await pumpUntilFound(tester, find.text('Name'));
+  await openManualReceiptForm(tester);
 
   await tester.enterText(formField('name'), name);
   await tester.enterText(formField('amount'), amount);
@@ -111,6 +138,15 @@ Future<int> addManualReceiptViaUI(
   // Offstage state and the BottomSubmitButton tap silently misses.
   await tester.pumpAndSettle(const Duration(seconds: 3));
 
+  return submitManualReceiptForm(tester);
+}
+
+/// Submits a filled receipt form and returns the new receipt's id.
+///
+/// Split out of [addManualReceiptViaUI] for specs that fill the form
+/// differently -- notably the ones asserting a field was pre-seeded, which must
+/// not touch it.
+Future<int> submitManualReceiptForm(WidgetTester tester) async {
   await tester.tap(find.byType(BottomSubmitButton));
   // Assert /view shell has mounted via the ReceiptEditPopupMenu, which
   // only renders on /view (gated on canEditReceipt -- see
@@ -118,4 +154,77 @@ Future<int> addManualReceiptViaUI(
   // extract the id from the URL.
   await pumpUntilFound(tester, find.byType(ReceiptEditPopupMenu));
   return receiptIdFromUrl(currentUrl(tester));
+}
+
+/// From the add/edit receipt form, opens the Images screen, attaches whatever
+/// `installFileSelectorMock` serves through the **file** source, and returns to
+/// the form. On the add form the file is only staged; it rides the create.
+Future<void> attachFileFromReceiptForm(WidgetTester tester) async {
+  // Tap the Tooltip wrapper for explicit semantics. Find the popup menu by
+  // widget type, not by icon: PopupMenuButton's default icon is
+  // `Icons.adaptive.more`, which differs between Android and iOS.
+  final imagesButton = find.byTooltip('View Images');
+  await tester.ensureVisible(imagesButton);
+  await tester.pump();
+  await tester.tap(imagesButton);
+  // Drain the iOS Cupertino page-transition slide-in (~400ms) before probing
+  // the popup, or the tap lands where the button will be, not where it is.
+  for (int i = 0; i < 6; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  await pumpUntilFound(tester, find.byType(PopupMenuButton));
+  await tester.tap(find.byType(PopupMenuButton));
+  // The popup scales in; wait until the item is hittable, then drain the open
+  // animation before tapping (tap-flake pattern 2 in mobile/CLAUDE.md).
+  await pumpUntilFound(tester, find.text(uploadFileLabel).hitTestable());
+  for (int i = 0; i < 5; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  await tester.tap(find.text(uploadFileLabel).hitTestable());
+  await tester.pumpAndSettle(const Duration(seconds: 2));
+
+  await tester.tap(find.byIcon(Icons.arrow_back));
+  await pumpUntilFound(tester, find.text('Name'));
+}
+
+/// From the add/edit receipt form, opens the Comments screen, sends [comment]
+/// and returns to the form. On the add form the comment is only staged on the
+/// model; it rides the create.
+Future<void> addCommentFromReceiptForm(
+  WidgetTester tester,
+  String comment,
+) async {
+  final commentsButton = find.byTooltip('View Comments');
+  await tester.ensureVisible(commentsButton);
+  await tester.pump();
+  await tester.tap(commentsButton);
+  await pumpUntilFound(tester, find.text('Receipt Comments'));
+  for (int i = 0; i < 6; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+
+  final commentField = find.byWidgetPredicate(
+    (w) => w is FormBuilderTextField && w.name == 'comment',
+  );
+  await pumpUntilFound(tester, commentField);
+  await tester.enterText(commentField, comment);
+  // The send button is enabled off a stream; wait for the ENABLED button, not
+  // merely its existence, or the tap is a no-op.
+  final sendButton = find.byWidgetPredicate((w) =>
+      w is IconButton &&
+      w.icon is Icon &&
+      (w.icon as Icon).icon == Icons.send &&
+      w.onPressed != null);
+  await pumpUntilFound(tester, sendButton.hitTestable());
+  await tester.tap(sendButton.hitTestable());
+  // Scoped to the list: in add state the input keeps its text after a send,
+  // so a bare find.text would match the field and return at once.
+  await pumpUntilFound(
+    tester,
+    find.descendant(
+        of: find.byType(ReceiptComments), matching: find.text(comment)),
+  );
+
+  await tester.tap(find.byIcon(Icons.arrow_back));
+  await pumpUntilFound(tester, find.text('Name'));
 }

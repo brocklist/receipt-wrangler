@@ -1,19 +1,19 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart' show MethodChannel, rootBundle;
-import 'package:flutter_test/flutter_test.dart';
-
+import 'package:flutter/services.dart' show rootBundle;
 import 'platform_mocks.dart';
 
 /// Stubs the `cunning_document_scanner` method channel so Quick Scan's
 /// "add a photo" action (`scanImagesMultiPart` → `CunningDocumentScanner.getPictures`)
 /// returns a fixed on-disk image instead of driving the native camera scanner.
 ///
-/// This is the *only* way to feed an image into the Quick Scan sheet on Linux
-/// desktop: the sheet's other upload icon (`getGalleryImages`) hard-throws
-/// "Unsupported platform" via a `Platform.operatingSystem` switch before it ever
-/// reaches `file_selector`, so the `file_selector` mock can't help there.
+/// This used to be the *only* way to feed an image into the Quick Scan sheet on
+/// Linux desktop, because the sheet's upload icon hard-threw "Unsupported
+/// platform" before it reached `file_selector`. That switch is gone (see
+/// `mobile/CLAUDE.md` → "Picking receipt files"), so `installFileSelectorMock`
+/// now works on desktop too. Reach for this one when a spec wants the scanner
+/// specifically, or a source neither picker mock covers.
 ///
 /// `getPictures` requests `Permission.camera` **itself** (Dart-side) before
 /// invoking its native channel, so we also grant camera/gallery permission here
@@ -44,12 +44,5 @@ Future<void> installDocumentScannerMock({
   final tempFile = File('${tempDir.path}/$name');
   await tempFile.writeAsBytes(pngBytes, flush: true);
 
-  const channel = MethodChannel('cunning_document_scanner');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(channel, (call) async {
-    if (call.method == 'getPictures') {
-      return <String>[tempFile.path];
-    }
-    return null;
-  });
+  installDocumentScannerChannelMock(<String>[tempFile.path]);
 }

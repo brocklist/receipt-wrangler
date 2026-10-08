@@ -13,7 +13,11 @@ import '../../client/client.dart';
 import '../../models/auth_model.dart';
 import '../../models/custom_field_model.dart';
 import '../../models/loading_model.dart';
+import '../../models/permissions_model.dart';
 import '../../models/receipt_model.dart';
+import '../../shared/functions/custom_field_values.dart';
+import '../../shared/functions/receipt_requirements.dart';
+import '../../shared/functions/receipt_upload.dart';
 import '../../shared/widgets/bottom_submit_button.dart';
 import '../../utils/date.dart';
 import '../../utils/forms.dart';
@@ -230,67 +234,13 @@ class ReceiptBottomSheetBuilder {
   List<api.UpsertCustomFieldValueCommand> buildCustomFieldValueUpsertCommand(
       Map<String, dynamic> form) {
     var customFieldModel = Provider.of<CustomFieldModel>(context, listen: false);
-    List<api.UpsertCustomFieldValueCommand> upsertCustomFieldValues = [];
 
-    // Process custom field values - only process fields that are currently part of the receipt
-    for (var existingCustomFieldValue in receiptModel.modifiedReceipt.customFields) {
-      // Find the custom field template
-      var customField = customFieldModel.customFields
-          .where((cf) => cf.id == existingCustomFieldValue.customFieldId)
-          .firstOrNull;
-      
-      if (customField == null) continue; // Skip if template not found
-
-      var fieldKey = "customField_${customField.id}";
-      var fieldValue = form[fieldKey];
-
-      // Only process if the field has a value (for text/currency fields) or for boolean/select fields
-      bool shouldProcess = false;
-      if (customField.type == api.CustomFieldType.BOOLEAN && fieldValue is bool) {
-        shouldProcess = true;
-      } else if (customField.type == api.CustomFieldType.SELECT && fieldValue is int) {
-        shouldProcess = true;
-      } else if (fieldValue != null && fieldValue.toString().isNotEmpty) {
-        shouldProcess = true;
-      }
-
-      if (shouldProcess) {
-        var customFieldValueBuilder = api.UpsertCustomFieldValueCommandBuilder()
-          ..customFieldId = customField.id
-          ..receiptId = receiptModel.receipt.id;
-
-        // Set the appropriate value based on the field type
-        switch (customField.type) {
-          case api.CustomFieldType.TEXT:
-            customFieldValueBuilder.stringValue = fieldValue.toString();
-            break;
-          case api.CustomFieldType.DATE:
-            if (fieldValue is DateTime) {
-              customFieldValueBuilder.dateValue = formatDate(zuluDateFormat, fieldValue);
-            } else if (fieldValue is String) {
-              customFieldValueBuilder.dateValue = fieldValue;
-            }
-            break;
-          case api.CustomFieldType.SELECT:
-            if (fieldValue is int) {
-              customFieldValueBuilder.selectValue = fieldValue;
-            }
-            break;
-          case api.CustomFieldType.CURRENCY:
-            customFieldValueBuilder.currencyValue = fieldValue.toString();
-            break;
-          case api.CustomFieldType.BOOLEAN:
-            if (fieldValue is bool) {
-              customFieldValueBuilder.booleanValue = fieldValue;
-            }
-            break;
-        }
-
-        upsertCustomFieldValues.add(customFieldValueBuilder.build());
-      }
-    }
-
-    return upsertCustomFieldValues;
+    return buildCustomFieldValueUpsertCommands(
+      attachedValues: receiptModel.modifiedReceipt.customFields,
+      customFields: customFieldModel.customFields,
+      form: form,
+      receiptId: receiptModel.receipt.id,
+    );
   }
 
   api.UpsertReceiptCommand buildReceiptUpsertCommand() {
@@ -324,38 +274,15 @@ class ReceiptBottomSheetBuilder {
   }
 
   Future<void> addReceipt(api.UpsertReceiptCommand receiptToAdd) async {
-    final receiptResponse = await OpenApiClient.client
-        .getReceiptApi()
-        .createReceipt(upsertReceiptCommand: receiptToAdd);
-    final newReceiptId = receiptResponse.data!.id;
-
-    final images = receiptModel.imagesToUploadBehaviorSubject.value;
-    if (images.isNotEmpty) {
-      final imageFutures = images.map(
-        (image) => OpenApiClient.client
-            .getReceiptImageApi()
-            .uploadReceiptImage(
-                file: image.multipartFile, receiptId: newReceiptId),
-      );
-      try {
-        await Future.wait(imageFutures);
-      } catch (e) {
-        // Receipt was created server-side, but at least one image upload
-        // failed. Surface a partial-failure message and still navigate so
-        // the user can see the receipt and retry the uploads from there
-        // -- otherwise they'd think nothing happened and might re-submit.
-        showErrorSnackbar(
-          context,
-          "Receipt added, but one or more images failed to upload. "
-          "Open the receipt to retry.",
-        );
-        context.go("/receipts/$newReceiptId/view");
-        return;
-      }
-    }
+    // One atomic call carrying the comments (on the command) and the staged
+    // images: a failure creates nothing, so there is no half-created receipt
+    // to report — the error surfaces through the caller's catch and the form
+    // stays put for a retry.
+    final receipt = await createReceiptWithImages(
+        receiptToAdd, receiptModel.imagesToUploadBehaviorSubject.value);
 
     showSuccessSnackbar(context, "Receipt added successfully");
-    context.go("/receipts/$newReceiptId/view");
+    context.go("/receipts/${receipt.id}/view");
   }
 
   Future<void> updateReceipt(api.UpsertReceiptCommand receiptToUpdate) async {
@@ -368,6 +295,19 @@ class ReceiptBottomSheetBuilder {
 
     receiptModel.setReceipt(updatedReceiptResponse.data as api.Receipt, true);
     context.go("/receipts/${receipt.id}/view");
+  }
+
+  String? _missingRequirementsMessage(Object? groupId) {
+    if (groupId is! int) {
+      return null;
+    }
+    final requirements = Provider.of<PermissionsModel>(context, listen: false)
+        .receiptRequirements(groupId);
+    return receiptSubmitRequirementsMessage(
+      requirements,
+      receiptModel: receiptModel,
+      formState: formState,
+    );
   }
 
   Widget buildReceiptSubmitButton(String fullPath) {
@@ -396,6 +336,16 @@ class ReceiptBottomSheetBuilder {
           // `formState` field (WranglerFormState) used inside this closure.
           final state = receiptModel.receiptFormKey.currentState;
           if (state == null || !state.saveAndValidate()) {
+            return;
+          }
+          // The group role's required fields, judged against the group the
+          // receipt is being saved INTO (a move is checked against the
+          // destination, as the server does). The server enforces this
+          // either way; checking here saves a round trip and names the fix.
+          final requirementsMessage =
+              _missingRequirementsMessage(state.value["groupId"]);
+          if (requirementsMessage != null) {
+            showErrorSnackbar(context, requirementsMessage);
             return;
           }
           // The Consumer rebuild + spinner is still useful UX -- it

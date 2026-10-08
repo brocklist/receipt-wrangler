@@ -24,7 +24,14 @@ class ReceiptStatus extends EnumClass {
   @BuiltValueEnumConst(wireName: r'DRAFT')
   static const ReceiptStatus DRAFT = _$DRAFT;
   /// Status of a receipt
-  @BuiltValueEnumConst(wireName: r'')
+  @BuiltValueEnumConst(wireName: r'DECLINED')
+  static const ReceiptStatus DECLINED = _$DECLINED;
+  /// Status of a receipt
+  // Applied by api/patches/apply-dart-dio-patches.sh -- do not hand-edit, and do not
+  // drop it as generator noise. Without `fallback: true` the generated _$valueOf throws
+  // on an unrecognized wire value, failing the WHOLE enclosing payload rather than the
+  // one field. See mobile/CLAUDE.md for the two outages that came of it.
+  @BuiltValueEnumConst(wireName: r'', fallback: true)
   static const ReceiptStatus empty = _$empty;
 
   static Serializer<ReceiptStatus> get serializer => _$receiptStatusSerializer;

@@ -22,6 +22,7 @@ type ItemView struct {
 	ReceiptId       uint
 	PaidByUserId    uint
 	ChargedToUserId uint
+	GroupId         uint
 	ItemAmount      decimal.Decimal
 }
 
@@ -46,6 +47,55 @@ func GetAllUsers(w http.ResponseWriter, r *http.Request) {
 
 			w.WriteHeader(http.StatusOK)
 			w.Write(bytes)
+
+			return 0, nil
+		},
+	}
+
+	HandleRequest(handler)
+}
+
+func GetPagedUsers(w http.ResponseWriter, r *http.Request) {
+	handler := structs.Handler{
+		ErrorMessage:   "Error retrieving users.",
+		Writer:         w,
+		Request:        r,
+		AppPermissions: []string{permissions.AppUsersRead},
+		ResponseType:   constants.ApplicationJson,
+		HandlerFunction: func(w http.ResponseWriter, r *http.Request) (int, error) {
+			command := commands.PagedRequestCommand{}
+			err := command.LoadDataFromRequest(w, r)
+			if err != nil {
+				return http.StatusInternalServerError, err
+			}
+
+			vErr := command.Validate()
+			if len(vErr.Errors) > 0 {
+				structs.WriteValidatorErrorResponse(w, vErr, http.StatusBadRequest)
+				return 0, nil
+			}
+
+			userRepository := repositories.NewUserRepository(nil)
+			users, count, err := userRepository.GetPagedUsers(command)
+			if err != nil {
+				return http.StatusInternalServerError, err
+			}
+
+			pagedData := structs.PagedData{}
+			data := make([]interface{}, 0)
+			for i := 0; i < len(users); i++ {
+				data = append(data, users[i])
+			}
+			pagedData.TotalCount = count
+			pagedData.Data = data
+
+			responseBytes, err := utils.MarshalResponseData(pagedData)
+			if err != nil {
+				return http.StatusInternalServerError, err
+			}
+
+			w.WriteHeader(http.StatusOK)
+			w.Write(responseBytes)
 
 			return 0, nil
 		},
@@ -170,8 +220,18 @@ func GetAmountOwedForUser(w http.ResponseWriter, r *http.Request) {
 						return http.StatusInternalServerError, err
 					}
 
+					// Gate the All-group expansion by per-group read permission, so
+					// settlement over "All" only folds in groups the caller may
+					// actually read (the All membership is unrestricted otherwise).
+					permissionService := services.NewPermissionService(nil)
 					for _, userGroupId := range userGroupIds {
-						totalGroupIds = append(totalGroupIds, utils.UintToString(userGroupId))
+						canRead, err := permissionService.HasGroupPermissions(token.UserId, userGroupId, permissions.GroupReceiptsRead)
+						if err != nil {
+							return http.StatusInternalServerError, err
+						}
+						if canRead {
+							totalGroupIds = append(totalGroupIds, utils.UintToString(userGroupId))
+						}
 					}
 				} else {
 					totalGroupIds = append(totalGroupIds, groupId)
@@ -198,19 +258,59 @@ func GetAmountOwedForUser(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			err = db.Table("items").Select("items.id as item_id, items.receipt_id as receipt_id, items.amount as item_amount, items.charged_to_user_id, receipts.id, items.status, receipts.paid_by_user_id").Joins("inner join receipts on receipts.id=items.receipt_id").Where("items.charged_to_user_id=? AND receipts.paid_by_user_id !=? AND receipts.id IN ? AND items.status=?", id, id, totalReceiptIds, models.ITEM_OPEN).Scan(&itemsOwed).Error
+			err = db.Table("items").Select("items.id as item_id, items.receipt_id as receipt_id, items.amount as item_amount, items.charged_to_user_id, receipts.id, receipts.group_id, items.status, receipts.paid_by_user_id").Joins("inner join receipts on receipts.id=items.receipt_id").Where("items.charged_to_user_id=? AND receipts.paid_by_user_id !=? AND receipts.id IN ? AND items.status=?", id, id, totalReceiptIds, models.ITEM_OPEN).Scan(&itemsOwed).Error
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}
 
-			err = db.Table("items").Select("items.id as item_id, items.receipt_id as receipt_id, items.amount as item_amount, items.charged_to_user_id, receipts.id, items.status, receipts.paid_by_user_id").Joins("inner join receipts on receipts.id=items.receipt_id").Where("items.charged_to_user_id !=? AND receipts.paid_by_user_id =? AND receipts.id IN ? AND items.status=?", id, id, totalReceiptIds, models.ITEM_OPEN).Scan(&itemsOthersOwe).Error
+			err = db.Table("items").Select("items.id as item_id, items.receipt_id as receipt_id, items.amount as item_amount, items.charged_to_user_id, receipts.id, receipts.group_id, items.status, receipts.paid_by_user_id").Joins("inner join receipts on receipts.id=items.receipt_id").Where("items.charged_to_user_id !=? AND receipts.paid_by_user_id =? AND receipts.id IN ? AND items.status=?", id, id, totalReceiptIds, models.ITEM_OPEN).Scan(&itemsOthersOwe).Error
 			if err != nil {
 				return http.StatusInternalServerError, err
+			}
+
+			// Member isolation is applied PER RECEIPT'S GROUP as items are folded in: a
+			// counterparty's contribution counts only if the caller may see them in
+			// that receipt's group, so an isolated group contributes nothing about a
+			// hidden member (even if the caller can see them via an open group they
+			// also share). The caller's own id is always visible. Resolved once per
+			// group. This intentionally overrides the endpoint's paid-by exemption for
+			// isolated viewers, and is a no-op for unrestricted callers.
+			permissionService := services.NewPermissionService(nil)
+			type settlementGroupVisibility struct {
+				visible      map[uint]struct{}
+				unrestricted bool
+			}
+			visibilityByGroup := map[uint]settlementGroupVisibility{}
+			counterpartyVisible := func(counterpartyId uint, groupId uint) (bool, error) {
+				if counterpartyId == id {
+					return true, nil
+				}
+				vis, ok := visibilityByGroup[groupId]
+				if !ok {
+					set, unrestricted, err := permissionService.GetVisibleUserIdsForUserInGroup(id, groupId)
+					if err != nil {
+						return false, err
+					}
+					vis = settlementGroupVisibility{visible: set, unrestricted: unrestricted}
+					visibilityByGroup[groupId] = vis
+				}
+				if vis.unrestricted {
+					return true, nil
+				}
+				_, visibleOk := vis.visible[counterpartyId]
+				return visibleOk, nil
 			}
 
 			// These are items from receipts that I did not pay for, so I owe these
 			for i := 0; i < len(itemsOwed); i++ {
 				item := itemsOwed[i]
+				visible, err := counterpartyVisible(item.PaidByUserId, item.GroupId)
+				if err != nil {
+					return http.StatusInternalServerError, err
+				}
+				if !visible {
+					continue
+				}
 				total = total.Add(item.ItemAmount)
 				amount, ok := resultMap[item.PaidByUserId]
 
@@ -224,6 +324,13 @@ func GetAmountOwedForUser(w http.ResponseWriter, r *http.Request) {
 			// These are items from receipts that I paid for, so they owe me
 			for i := 0; i < len(itemsOthersOwe); i++ {
 				item := itemsOthersOwe[i]
+				visible, err := counterpartyVisible(item.ChargedToUserId, item.GroupId)
+				if err != nil {
+					return http.StatusInternalServerError, err
+				}
+				if !visible {
+					continue
+				}
 				total = total.Sub(item.ItemAmount)
 				amount, ok := resultMap[item.ChargedToUserId]
 

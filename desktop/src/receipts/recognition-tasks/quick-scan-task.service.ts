@@ -92,6 +92,7 @@ export class QuickScanTaskService {
         groupId: file.groupId, registering: false, sending: false, loaded: 0,
         paidByUserId: file.paidByUserId, status: file.status,
         categoryIds: [...file.categoryIds], tagIds: [...file.tagIds],
+        comment: file.comment,
         awaitingConfirmation: false,
       };
       this.queue.push(id);
@@ -255,6 +256,7 @@ export class QuickScanTaskService {
     const source: QuickScanSubmission = {
       file, groupId: local.groupId, paidByUserId: local.paidByUserId, status: local.status,
       categoryIds: [...local.categoryIds], tagIds: [...local.tagIds],
+      comment: local.comment,
     };
     this.sources.set(local.clientRequestId, source);
     const restored = { ...local, reselectRequired: false, error: undefined, loaded: 0, total: undefined };
@@ -303,6 +305,7 @@ export class QuickScanTaskService {
         clientRequestId: id, fileName: source.file.name, fileSize: source.file.size,
         groupId: source.groupId, paidByUserId: source.paidByUserId,
         status: source.status, categoryIds: source.categoryIds, tagIds: source.tagIds,
+        comment: source.comment,
       }, "body", false, this.localOptions);
       const sub = registered.pipe(
         tap(task => {

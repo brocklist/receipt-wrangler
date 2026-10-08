@@ -1,25 +1,31 @@
 // Flow #8 -- Quick Scan happy path.
 //
-// Quick Scan is the AI-assisted bulk-receipt entry flow. The user
-// taps "Quick Scan" from the bottom-nav Add menu, picks one or more
-// images (camera or gallery), fills a per-image form (group, paid
-// by, status), and submits. The backend queues each image as an
-// async OCR/AI extraction job that materializes into a receipt.
+// Quick Scan is the AI-assisted bulk-receipt entry flow. This covers the
+// gallery route into it: hold the bottom-nav scan slot, pick "Upload from
+// Gallery", choose one or more images, fill a per-image form (group, paid by,
+// status), and submit. The backend queues each image as an async OCR/AI
+// extraction job that materializes into a receipt.
+//
+// The camera route is the slot's plain tap and is covered by
+// quick_scan_entry_test.dart, which drives the mocked document scanner.
 //
 // PRECONDITION: the demo and local backends both have
 // `featureConfig.aiPoweredReceipts: true`. If false, the in-app
 // flow shows an error snackbar instead of the bottom sheet (see
 // mobile/lib/shared/functions/quick_scan.dart:227-231).
 //
-// Skipped on Linux: scan.dart's gallery path throws "Unsupported
-// platform" for Linux/macOS/Windows desktop. Runs on Android
-// emulator + iOS simulator in CI.
+// Runs on every target. It drives the **file** source, which
+// `installFileSelectorMock` intercepts by swapping the platform interface
+// before any platform code runs. (The photo source is not asserted here: on
+// Linux `image_picker` delegates to `file_selector`, so the two sources are
+// indistinguishable there.)
 
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:receipt_wrangler_mobile/constants/receipt_entry.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/bottom_submit_button.dart';
 
 import 'helpers/feature_flags.dart';
@@ -28,6 +34,8 @@ import 'helpers/form_actions.dart';
 import 'helpers/login.dart';
 import 'helpers/platform_mocks.dart';
 import 'helpers/pump.dart';
+import 'helpers/quick_scan_actions.dart';
+import 'helpers/receipt_test_helpers.dart';
 import 'helpers/users.dart';
 
 void main() {
@@ -39,10 +47,7 @@ void main() {
     }
   });
 
-  testWidgets('quick scan from gallery: pick image, fill form, submit',
-      // Same Linux skip as Flow #2 / Flow B -- gallery picker only
-      // supports Android/iOS in scan.dart.
-      skip: Platform.isLinux,
+  testWidgets('quick scan from a file: pick image, fill form, submit',
       (tester) async {
     // Quick Scan is gated on featureConfig.aiPoweredReceipts, which is off by
     // default on the local backend. Flip it on for this test (restored on
@@ -55,39 +60,38 @@ void main() {
 
     await loginAsAdmin(tester);
 
-    // Open the bottom-nav Add menu and pick "Quick Scan".
-    // The featureConfig.aiPoweredReceipts gate is enforced inside
-    // showQuickScanBottomSheet (a snackbar fires if it's false), but
-    // the menu item is unconditionally present in showAddMenu (see
-    // mobile/lib/shared/functions/show_add_menu.dart:50-54). So the
-    // gate's verification is implicit: if the bottom sheet opens,
-    // the flag is true.
-    await tester.tap(find.text('Add').hitTestable());
-    // The add menu's items mount on the sheet slide-in's first frame; a tap
-    // computed then misses (deterministic on iOS: "Offset(595.9, 866.0) ...
-    // would not hit test"). Wait for hittability, then drain the slide-in --
-    // same hardening as addManualReceiptViaUI.
-    await pumpUntilFound(tester, find.text('Quick Scan').hitTestable());
+    // Hold the scan slot and pick "Upload from Gallery". Both that entry and
+    // the slot's "Scan" label are gated on featureConfig.aiPoweredReceipts
+    // plus group.receipts.quick-scan, so their presence verifies the flag --
+    // and the sheet re-checks the same gate before opening.
+    await pumpUntilFound(tester, scanNavSlot());
+    await tester.longPress(scanNavSlot());
+    // The menu's items mount on the popup's first frame; a tap computed then
+    // misses (deterministic on iOS: "Offset(595.9, 866.0) ... would not hit
+    // test"). Wait for hittability, then drain the animation -- same hardening
+    // as addManualReceiptViaUI.
+    await pumpUntilFound(tester, find.text(uploadFileLabel).hitTestable());
     for (int i = 0; i < 5; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    await tester.tap(find.text('Quick Scan').hitTestable());
+    await tester.tap(find.text(uploadFileLabel).hitTestable());
 
-    // Wait for the bottom sheet to mount. The title "Quick Scan"
-    // shows in the sheet header; the gallery upload action shows as
-    // an Icons.upload_file_rounded IconButton (quick_scan.dart:67).
-    await pumpUntilFound(tester, find.byIcon(Icons.upload_file_rounded));
-
-    // Trigger the gallery picker -- the mock returns one 1x1 PNG.
-    await tester.tap(find.byIcon(Icons.upload_file_rounded));
-    // Mock resolves immediately; the imageSubject emits and the
-    // QuickScanForm card mounts with three dropdowns (groupId,
-    // paidByUserId, status). Wait for the form to appear.
+    // The picker mock resolves immediately with one 1x1 PNG, and the sheet opens
+    // already seeded with it -- so the QuickScanForm card mounts. e2e-admin
+    // belongs to several groups and has no quickScanDefaultGroupId, so no group
+    // is seeded and ONLY the Group dropdown renders at this point.
     await pumpUntilFound(tester, find.text('Group'));
 
     // Fill the per-image form. e2e-admin's quickScan user prefs are
     // null, so all three fields need to be set explicitly.
     await selectDropdown(tester, 'groupId', 'My Receipts');
+
+    // Paid-by and status mount only once the group is picked, on the frame after
+    // its onChanged setState. selectDropdown already drains enough frames for
+    // that, but wait explicitly so the dependency is visible rather than
+    // incidental -- selectDropdown taps its target without first waiting for it.
+    await pumpUntilFound(tester, quickScanDropdown('paidByUserId'));
+
     await selectDropdown(tester, 'paidByUserId', adminDisplayName(tester));
     await selectDropdown(tester, 'status', 'Open');
 

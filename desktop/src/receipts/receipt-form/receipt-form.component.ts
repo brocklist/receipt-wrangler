@@ -1,18 +1,19 @@
-import { Component, EmbeddedViewRef, HostListener, Injector, OnInit, Signal, TemplateRef, runInInjectionContext, signal, viewChild } from "@angular/core";
+import { Component, EmbeddedViewRef, HostListener, Injector, OnInit, Signal, TemplateRef, computed, runInInjectionContext, signal, viewChild } from "@angular/core";
 import { toSignal } from "@angular/core/rxjs-interop";
 import { AbstractControl, FormArray, FormBuilder, FormGroup, Validators } from "@angular/forms";
-import { MatDialog } from "@angular/material/dialog";
+import { MatDialog, MatDialogRef } from "@angular/material/dialog";
 import { MatExpansionPanel } from "@angular/material/expansion";
 import { MatSnackBarRef } from "@angular/material/snack-bar";
 import { ActivatedRoute, Router } from "@angular/router";
 import { UntilDestroy, untilDestroyed } from "@ngneat/until-destroy";
 import { Store } from "@ngxs/store";
 import { addHours } from "date-fns";
-import { debounceTime, catchError, finalize, forkJoin, iif, map, of, startWith, switchMap, take, tap } from "rxjs";
+import { debounceTime, catchError, finalize, forkJoin, map, of, startWith, take, tap } from "rxjs";
 import { CarouselComponent } from "src/carousel/carousel/carousel.component";
 import { DEFAULT_DIALOG_CONFIG, DEFAULT_HOST_CLASS } from "src/constants";
 import { RECEIPT_STATUS_OPTIONS } from "src/constants/receipt-status-options";
 import { FormMode } from "src/enums/form-mode.enum";
+import { ConfirmationDialogComponent } from "src/shared-ui/confirmation-dialog/confirmation-dialog.component";
 import { LayoutState } from "src/store/layout.state";
 import { HideProgressBar, ShowProgressBar } from "src/store/layout.state.actions";
 import { UserAutocompleteComponent } from "src/user-autocomplete/user-autocomplete/user-autocomplete.component";
@@ -37,7 +38,9 @@ import { QueueMode, ReceiptQueueService } from "../../services/receipt-queue.ser
 import { StatefulMenuItem } from "../../standalone/components/filtered-stateful-menu/stateful-menu-item";
 import { AuthState, FeatureConfigState, GroupState, UserState } from "../../store";
 import { downloadFile } from "../../utils/file";
+import { missingReceiptRequirementsMessage, receiptRequirementsFor } from "../../utils/receipt-requirements";
 import { ItemListComponent } from "../item-list/item-list.component";
+import { ReceiptCommentsComponent } from "../receipt-comments/receipt-comments.component";
 import { ShareListComponent } from "../share-list/share-list.component";
 
 
@@ -58,6 +61,10 @@ export class ReceiptFormComponent implements OnInit {
 
   public readonly itemListComponent = viewChild.required(ItemListComponent);
 
+  // Optional: the comments child only renders when the group doesn't hide
+  // comments (see the @if in the template), so this query may be empty.
+  public readonly receiptCommentsComponent = viewChild(ReceiptCommentsComponent);
+
   public readonly uploadImageComponent = viewChild.required(UploadImageComponent);
 
   public readonly paidByAutocomplete = viewChild.required<UserAutocompleteComponent>("paidByAutocomplete");
@@ -68,7 +75,7 @@ export class ReceiptFormComponent implements OnInit {
 
   public readonly expandedImageTemplate = viewChild.required<TemplateRef<any>>("expandedImageTemplate");
 
-  public readonly carouselComponent = viewChild.required(CarouselComponent);
+  public readonly carouselComponent = viewChild(CarouselComponent);
 
   public groups = this.store.selectSignal(GroupState.groupsWithoutAll);
 
@@ -105,6 +112,11 @@ export class ReceiptFormComponent implements OnInit {
 
   public customFieldsStatefulMenuItems: StatefulMenuItem[] = [];
 
+  // Custom fields this form added on its own from the selected group's defaults.
+  // Only these are candidates for removal when the group changes - anything the
+  // user added, or typed into, is theirs and is left alone.
+  private autoAppliedCustomFieldIds = new Set<number>();
+
   public originalReceipt?: Receipt;
 
   public images = signal<FileDataView[]>([]);
@@ -131,6 +143,21 @@ export class ReceiptFormComponent implements OnInit {
 
   public selectedGroup = signal<Group | undefined>(undefined);
 
+  // The form's current group id (the target group in edit mode too - the server
+  // checks an update against the group the receipt is moving into).
+  private readonly currentGroupId = signal<number | string | null | undefined>(undefined);
+
+  private readonly requirementsByGroup = this.store.selectSignal(AuthState.groupReceiptRequirements);
+
+  /**
+   * The caller's role-required receipt fields in the form's current group,
+   * already resolved server-side (hidden-field and permission waivers applied).
+   * Re-evaluates when the group changes.
+   */
+  public readonly receiptRequirements = computed(() =>
+    receiptRequirementsFor(this.requirementsByGroup(), this.currentGroupId())
+  );
+
   public editLink = "";
 
   public cancelLink = "";
@@ -151,7 +178,12 @@ export class ReceiptFormComponent implements OnInit {
 
   public receiptStatusOptions = RECEIPT_STATUS_OPTIONS;
 
-  public showLargeImagePreview: boolean = false;
+  private expandedImageDialog?: MatDialogRef<unknown>;
+
+  /** 0 when the carousel is not rendered, i.e. while images are hidden. */
+  public get currentImageIndex(): number {
+    return this.carouselComponent()?.currentlyShownImageIndex ?? 0;
+  }
 
   public queueIds: string[] = [];
 
@@ -236,7 +268,6 @@ export class ReceiptFormComponent implements OnInit {
         this.setReceiptPermissions();
         this.getImageFiles();
         this.setHeaderText();
-        this.setShowLargeImagePreview();
         this.setQueueData();
         document.scrollingElement?.scrollTo(0, 0);
       });
@@ -334,10 +365,6 @@ export class ReceiptFormComponent implements OnInit {
     });
   }
 
-  private setShowLargeImagePreview(): void {
-    this.showLargeImagePreview = this.store.selectSnapshot(AuthState.userPreferences)?.showLargeImagePreviews ?? false;
-  }
-
   private setHeaderText(): void {
     this.formHeaderText = runInInjectionContext(this.injector, () => toSignal(
       (this.form.get("name") as AbstractControl).valueChanges.pipe(
@@ -371,12 +398,20 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   private setReceiptPermissions(): void {
-    // In add mode there is no saved receipt yet, so gate against the selected
-    // group (the same group the route guard checked + the form's groupId seed);
-    // otherwise gate against the receipt's own group.
+    // In add mode there is no saved receipt yet, so gate against the add target -
+    // the group the receipt would be created in, which is what initForm seeds and
+    // what the route guard checked; otherwise gate against the receipt's own group.
+    //
+    // The selectedGroupId tail is load-bearing, and is the one case where the gate
+    // and the seed legitimately differ: a multi-group user browsing the "All"
+    // group has no add target, so the form is seeded blank (they must pick) while
+    // the gate stays on the All group, which carries real permissions, exactly as
+    // before. Gating on that blank seed instead would resolve NaN, and
+    // hasGroupPermission would deny - rendering the whole add form read-only.
     const groupId =
       this.mode === FormMode.add
-        ? Number.parseInt(this.store.selectSnapshot(GroupState.selectedGroupId))
+        ? (this.store.selectSnapshot(GroupState.addTargetGroupId) ??
+          Number.parseInt(this.store.selectSnapshot(GroupState.selectedGroupId)))
         : (this.originalReceipt?.groupId ?? 0);
     const editPermission =
       this.mode === FormMode.add
@@ -395,16 +430,24 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   private initForm(): void {
-    let selectedGroupId: number | string = this.store.selectSnapshot(
-      GroupState.selectedGroupId
-    );
-    const group = this.store.selectSnapshot(GroupState.getGroupById(selectedGroupId));
+    // Reset BEFORE the form is built: initForm() re-runs on every route-data
+    // emission and ends by calling listenForGroupChanges(), whose startWith()
+    // fires synchronously - so it must already describe the new form. Without
+    // this, a stale auto set could strip a saved receipt's own fields.
+    this.autoAppliedCustomFieldIds.clear();
 
-    if (group?.isAllGroup) {
-      selectedGroupId = "";
-    } else {
-      selectedGroupId = Number(selectedGroupId);
-    }
+    // The group being browsed, or -- when that is not a receipt target (the "All"
+    // group, nothing selected, or a stale persisted id) -- the user's only group.
+    //
+    // The empty-string fallback is deliberate and must not be "modernised" to 0:
+    // Validators.required calls isEmptyInputValue, which treats 0 as PRESENT
+    // (only null/undefined and zero-length string/array count as empty), so a 0
+    // seed would make a group-less form valid and POST groupId: 0. It is also
+    // the value app-autocomlete filters its option list by, and "0" matches only
+    // groups whose name contains a zero.
+    const addTargetGroupId: number | string =
+      this.store.selectSnapshot(GroupState.addTargetGroupId) ?? "";
+
     this.form = this.formBuilder.group({
       name: [this.originalReceipt?.name ?? "", Validators.required],
       amount: [
@@ -422,7 +465,7 @@ export class ReceiptFormComponent implements OnInit {
         Validators.required,
       ],
       groupId: [
-        this.originalReceipt?.groupId ?? selectedGroupId,
+        this.originalReceipt?.groupId ?? addTargetGroupId,
         Validators.required,
       ],
       status: this.originalReceipt?.status ?? ReceiptStatus.Open,
@@ -482,6 +525,7 @@ export class ReceiptFormComponent implements OnInit {
       untilDestroyed(this),
       startWith(this.form.get("groupId")?.value),
       tap((groupId) => {
+        this.currentGroupId.set(groupId);
         this.setCategoryTagPoolsForGroup(groupId);
         const paidBy = this.form.get("paidByUserId");
         const users = this.store.selectSnapshot(UserState.users);
@@ -500,9 +544,65 @@ export class ReceiptFormComponent implements OnInit {
             .filter((u) => !groupMembers?.includes(u.id.toString()))
             .map((u) => u.id.toString()));
         }
+
+        // Inside this tap, after the selectedGroup signal write: under zoneless
+        // CD that write is what schedules the render, and a FormArray mutation
+        // on its own has no change-detection trigger.
+        this.applyGroupDefaultCustomFields(groupId);
       })
     )
       .subscribe();
+  }
+
+  // Applies the selected group's configured default custom fields to the form -
+  // a "smart swap": a default this form added and the user never filled in is
+  // dropped when the new group doesn't want it, anything with a value (or that
+  // the user added themselves) stays, and the new group's missing defaults are
+  // appended.
+  //
+  // Runs on load in EVERY mode (via listenForGroupChanges' startWith) and on
+  // every group change. A group's defaults are meant to read as that group's
+  // built-in receipt fields, so a saved receipt that predates the configuration
+  // shows them too - blank and read-only in view mode, and attached as empty
+  // values once an edit is saved. On load the removal pass is inert:
+  // autoAppliedCustomFieldIds is cleared at the top of initForm().
+  private applyGroupDefaultCustomFields(groupId: number | string | null | undefined): void {
+    // Never without the catalog permission - such a user's save would 403 on the
+    // backend's custom field selection check.
+    if (!groupId || !this.canManageCustomFields()) {
+      return;
+    }
+
+    const group = this.store.selectSnapshot(GroupState.getGroupById(groupId.toString()));
+    const defaultIds = group?.groupReceiptSettings?.defaultCustomFieldIds ?? [];
+    const targetIds = new Set(defaultIds);
+
+    for (const autoAppliedId of Array.from(this.autoAppliedCustomFieldIds)) {
+      if (targetIds.has(autoAppliedId)) {
+        continue;
+      }
+
+      const index = this.findCustomFieldControlIndex(autoAppliedId);
+      const control = index >= 0 ? this.customFieldsFormArray.at(index) : undefined;
+      if (control && this.isCustomFieldControlEmpty(control)) {
+        this.removeCustomFieldControl(autoAppliedId);
+        this.markCustomFieldMenuItemDeselected(autoAppliedId);
+      }
+      // Dropped from the auto set either way: a field the user filled in is now
+      // their data and must survive every later group change.
+      this.autoAppliedCustomFieldIds.delete(autoAppliedId);
+    }
+
+    for (const defaultId of targetIds) {
+      // Skips a field missing from the loaded catalog, and one the form already
+      // carries (user-added, or kept from the group switched away from).
+      if (!this.addCustomFieldControl(defaultId)) {
+        continue;
+      }
+
+      this.markCustomFieldMenuItemSelected(defaultId);
+      this.autoAppliedCustomFieldIds.add(defaultId);
+    }
   }
 
   private getImageFiles(): void {
@@ -544,8 +644,59 @@ export class ReceiptFormComponent implements OnInit {
       });
   }
 
+  /**
+   * Whether the group requires an image and the receipt has none. Add mode
+   * counts the queued uploads; edit mode the saved images, which update live
+   * as images are added and removed (falling back to the receipt's own list
+   * while they are still loading).
+   */
+  public isImageMissing(): boolean {
+    if (this.mode === FormMode.view || !this.receiptRequirements().imageRequired) {
+      return false;
+    }
+    return this.imageCount() === 0;
+  }
+
+  /**
+   * Whether the group requires a comment and the receipt has none. The comments
+   * child mirrors its list's length into a signal: queued comments in add mode,
+   * the receipt's saved comments (updated live) in edit mode.
+   */
+  public isCommentMissing(): boolean {
+    if (this.mode === FormMode.view || !this.receiptRequirements().commentRequired) {
+      return false;
+    }
+    return (this.receiptCommentsComponent()?.commentCount() ?? 0) === 0;
+  }
+
+  /** In edit mode the server refuses deleting the last required image. */
+  public isLastImageLocked(): boolean {
+    return (
+      this.mode === FormMode.edit &&
+      this.receiptRequirements().imageRequired &&
+      this.imageCount() <= 1
+    );
+  }
+
+  /** Passed to the comments child: in edit mode the last comment is kept. */
+  public isCommentDeletionLimited(): boolean {
+    return this.mode === FormMode.edit && this.receiptRequirements().commentRequired;
+  }
+
+  private imageCount(): number {
+    if (this.mode === FormMode.add) {
+      return this.filesToUpload().length;
+    }
+    return this.imagesLoading()
+      ? (this.originalReceipt?.imageFiles?.length ?? 0)
+      : this.images().length;
+  }
+
   public removeImage(): void {
-    const index = this.carouselComponent().currentlyShownImageIndex;
+    if (this.isLastImageLocked()) {
+      return;
+    }
+    const index = this.currentImageIndex;
 
     if (this.mode === FormMode.add) {
       const newImages = Array.from(this.filesToUpload());
@@ -568,7 +719,7 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   public magicFill(): void {
-    const index = this.carouselComponent().currentlyShownImageIndex;
+    const index = this.currentImageIndex;
 
     let file: Blob | undefined;
     let receiptImageId;
@@ -594,58 +745,304 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   private patchMagicValues(magicReceipt: Receipt): void {
+    // A field is only reported as filled when it actually changes the form, so
+    // an empty/unmatched value never claims a phantom fill. Scalars come first,
+    // then each association through the form's existing builders (amount is
+    // patched before items so item validators see the filled receipt total).
+    const filledKeys: string[] = [];
+
+    this.patchMagicScalars(magicReceipt, filledKeys);
+
+    if (
+      this.handleCategoryAndTagMagicFill(
+        "categories",
+        magicReceipt?.categories ?? [],
+        this.categories
+      )
+    ) {
+      filledKeys.push("categories");
+    }
+    if (
+      this.handleCategoryAndTagMagicFill(
+        "tags",
+        magicReceipt?.tags ?? [],
+        this.tags
+      )
+    ) {
+      filledKeys.push("tags");
+    }
+    if (this.patchMagicItems(magicReceipt)) {
+      filledKeys.push("receiptItems");
+    }
+    if (this.patchMagicCustomFields(magicReceipt)) {
+      filledKeys.push("customFields");
+    }
+    if (this.patchMagicComments(magicReceipt)) {
+      filledKeys.push("comments");
+    }
+
+    this.showMagicFillResult(filledKeys);
+  }
+
+  // Patches the scalar fields. Each is skipped when the backend value is unset:
+  // the `value && value !== default` guard covers both the falsy sentinels
+  // (name "", paidByUserId 0, status "") and the truthy ones (amount "0", the
+  // zero date). status routes through the default branch.
+  private patchMagicScalars(magicReceipt: Receipt, filledKeys: string[]): void {
     const keysWithDefaults = {
       name: "",
       amount: "0",
       date: "0001-01-01T00:00:00Z",
-      categories: null,
-      tags: null,
+      paidByUserId: 0,
+      status: "",
     } as any;
-    const validKeys: string[] = [];
     Object.keys(keysWithDefaults).forEach((key) => {
       let value = (magicReceipt as any)[key] as string | Date;
       if (value && value !== keysWithDefaults[key]) {
         switch (key) {
-          case "categories":
-            this.handleCategoryAndTagMagicFill(
-              key,
-              magicReceipt?.categories ?? [],
-              this.categories
-            );
-            break;
-          case "tags":
-            this.handleCategoryAndTagMagicFill(
-              key,
-              magicReceipt?.tags ?? [],
-              this.tags
-            );
-            break;
           case "date":
             value = this.handleDateMagicFill(value as string);
             this.form.patchValue({
               date: value,
             });
             break;
+          case "paidByUserId":
+            this.patchMagicValue(key, magicReceipt);
+            // patchValue updates the control but not the autocomplete's shown
+            // text, which is seeded from the control only once on init.
+            this.paidByAutocomplete()?.autocompleteComponent()?.syncSingleDisplay();
+            break;
           default:
             this.patchMagicValue(key, magicReceipt);
         }
 
-        validKeys.push(key);
+        filledKeys.push(key);
       }
     });
+  }
 
-    if (validKeys.length > 0) {
-      const successString = `Magic fill successfully filled ${validKeys.join(
-        ", "
-      )} from selected image!`;
-      this.snackbarService.success(successString, {
-        duration: 10000,
-      });
-    } else {
+  // Appends magic-filled items (and shares — items with a chargedToUserId) onto
+  // the receiptItems array using the same builder the form uses elsewhere, which
+  // also nests linkedItems and per-item categories/tags. Returns whether any were
+  // added.
+  private patchMagicItems(magicReceipt: Receipt): boolean {
+    const items = magicReceipt.receiptItems ?? [];
+    if (items.length === 0) {
+      return false;
+    }
+
+    items.forEach((item) => {
+      const itemForm = buildItemForm(
+        item,
+        this.originalReceipt?.id?.toString(),
+        !!item.chargedToUserId,
+        this.syncAmountWithItems
+      );
+      this.receiptItemsFormArray.push(itemForm);
+    });
+    this.refreshComponentsAndSync();
+    return true;
+  }
+
+  // Appends magic-filled custom field values. The magic-fill response carries no
+  // field definition, so a value is only ingested when its field is in the loaded
+  // catalog pool (otherwise it can't be rendered or edited); a field the receipt
+  // already has a value for is skipped to avoid duplicates. Returns whether any
+  // were added.
+  //
+  // A control the group's defaults auto-added is a special case: it is already on
+  // the form but still EMPTY, so plain "skip what's present" would silently drop
+  // the magic value for exactly the fields a group pre-adds. Those get filled in
+  // place instead. Anything the user typed into, or added by hand, is left alone.
+  private patchMagicCustomFields(magicReceipt: Receipt): boolean {
+    const values = magicReceipt.customFields ?? [];
+    if (values.length === 0) {
+      return false;
+    }
+
+    let filledAny = false;
+    values.forEach((value) => {
+      if (this.fillEmptyAutoAppliedCustomField(value)) {
+        filledAny = true;
+        return;
+      }
+
+      if (!this.addCustomFieldControl(value.customFieldId, value)) {
+        return;
+      }
+
+      this.markCustomFieldMenuItemSelected(value.customFieldId);
+      filledAny = true;
+    });
+    return filledAny;
+  }
+
+  // Fills a still-empty, auto-applied custom field control with [value], returning
+  // whether it did. The control is REPLACED rather than patched so it goes through
+  // buildCustomOptionFormGroup's `?? null` / `?? false` normalization, like every
+  // other creation path - patchValue with a partially populated CustomFieldValue
+  // would write undefined into the value columns it doesn't carry.
+  //
+  // Filling it makes it the user's data, so it leaves autoAppliedCustomFieldIds and
+  // a later group switch will no longer drop it.
+  private fillEmptyAutoAppliedCustomField(value: CustomFieldValue): boolean {
+    if (!this.autoAppliedCustomFieldIds.has(value.customFieldId)) {
+      return false;
+    }
+
+    const index = this.findCustomFieldControlIndex(value.customFieldId);
+    if (index < 0) {
+      return false;
+    }
+
+    const control = this.customFieldsFormArray.at(index);
+    if (!this.isCustomFieldControlEmpty(control)) {
+      return false;
+    }
+
+    this.customFieldsFormArray.setControl(
+      index,
+      this.buildCustomOptionFormGroup(value)
+    );
+    this.autoAppliedCustomFieldIds.delete(value.customFieldId);
+    this.markCustomFieldMenuItemSelected(value.customFieldId);
+    return true;
+  }
+
+  // Appends a control for [customFieldId] to the custom fields form array,
+  // returning whether one was added. A field missing from the loaded catalog
+  // (this.customFields) can't be rendered or edited, and a field the form
+  // already carries would render twice, so both are skipped. [value] seeds the
+  // control (magic fill supplies one); omit it for an empty field.
+  private addCustomFieldControl(
+    customFieldId: number,
+    value?: CustomFieldValue
+  ): boolean {
+    const definition = this.customFields.find(
+      (field) => field.id === customFieldId
+    );
+    if (!definition) {
+      return false;
+    }
+
+    const alreadyPresent = this.customFieldsFormArray.controls.some(
+      (control) => control.value?.["customFieldId"] === customFieldId
+    );
+    if (alreadyPresent) {
+      return false;
+    }
+
+    this.customFieldsFormArray.push(
+      this.buildCustomOptionFormGroup(
+        value ?? ({ customFieldId } as CustomFieldValue)
+      )
+    );
+    return true;
+  }
+
+  // Removes [customFieldId]'s control, if the form carries one. The index guard
+  // is load-bearing: FormArray.removeAt(-1) splices off the LAST control, so an
+  // unguarded findIndex would drop an unrelated field.
+  private removeCustomFieldControl(customFieldId: number): void {
+    const index = this.findCustomFieldControlIndex(customFieldId);
+    if (index >= 0) {
+      this.customFieldsFormArray.removeAt(index);
+    }
+  }
+
+  // Index of [customFieldId]'s control in the custom fields form array, or -1.
+  private findCustomFieldControlIndex(customFieldId: number): number {
+    return this.customFieldsFormArray.controls.findIndex(
+      (control) =>
+        control.value?.["customFieldId"]?.toString() === customFieldId.toString()
+    );
+  }
+
+  // Whether a custom field control holds nothing the user typed. Every typed
+  // column must be null-or-empty AND booleanValue falsy — buildCustomOptionFormGroup
+  // seeds booleanValue to false, so a naive "every value is null" check would call
+  // every control non-empty. A BOOLEAN deliberately left false counts as empty.
+  private isCustomFieldControlEmpty(group: AbstractControl): boolean {
+    const value = group.value ?? {};
+    const isBlank = (columnValue: unknown): boolean =>
+      columnValue === null || columnValue === undefined || columnValue === "";
+
+    return (
+      isBlank(value["stringValue"]) &&
+      isBlank(value["dateValue"]) &&
+      isBlank(value["selectValue"]) &&
+      isBlank(value["currencyValue"]) &&
+      !value["booleanValue"]
+    );
+  }
+
+  // Flips the manage-fields menu entry to selected so the newly added custom
+  // field renders.
+  private markCustomFieldMenuItemSelected(customFieldId: number): void {
+    this.setCustomFieldMenuItemSelection(customFieldId, true);
+  }
+
+  // Clears the manage-fields menu entry for a custom field the form no longer
+  // carries, so the menu keeps matching the rendered fields.
+  private markCustomFieldMenuItemDeselected(customFieldId: number): void {
+    this.setCustomFieldMenuItemSelection(customFieldId, false);
+  }
+
+  // Immutable array replace - required under zoneless CD, mirroring
+  // customFieldChanged.
+  private setCustomFieldMenuItemSelection(
+    customFieldId: number,
+    selected: boolean
+  ): void {
+    const menuValue = customFieldId.toString();
+    const index = this.customFieldsStatefulMenuItems.findIndex(
+      (item) => item.value === menuValue
+    );
+    if (index === -1) {
+      return;
+    }
+
+    const updated = Array.from(this.customFieldsStatefulMenuItems);
+    updated[index] = { ...updated[index], selected: selected };
+    this.customFieldsStatefulMenuItems = updated;
+  }
+
+  // Hands magic-filled comments to the comments child, which owns them and is
+  // mode-aware (add mode collects them for the create submit; edit mode POSTs
+  // each as an individual resource). Returns whether the child handled them.
+  private patchMagicComments(magicReceipt: Receipt): boolean {
+    const comments = magicReceipt.comments ?? [];
+    const commentsComponent = this.receiptCommentsComponent();
+    if (comments.length === 0 || !commentsComponent) {
+      return false;
+    }
+
+    commentsComponent.addMagicFilledComments(comments);
+    return true;
+  }
+
+  private showMagicFillResult(filledKeys: string[]): void {
+    if (filledKeys.length === 0) {
       this.snackbarService.error(
         "Could not find any values to fill! Try reuploading a clearer image."
       );
+      return;
     }
+
+    // Map the raw form keys of the added fields to reader-friendly labels; the
+    // existing scalar keys map to themselves.
+    const labels: { [key: string]: string } = {
+      paidByUserId: "paid by",
+      receiptItems: "items",
+      customFields: "custom fields",
+    };
+    const filledLabels = filledKeys.map((key) => labels[key] ?? key);
+    const successString = `Magic fill successfully filled ${filledLabels.join(
+      ", "
+    )} from selected image!`;
+    this.snackbarService.success(successString, {
+      duration: 10000,
+    });
   }
 
   private patchMagicValue(key: string, magicReceipt: Receipt): void {
@@ -658,18 +1055,28 @@ export class ReceiptFormComponent implements OnInit {
     return this.formatMagicFilledDate(value);
   }
 
+  // Appends the magic-filled categories/tags that resolve to an entry in the
+  // available pool and aren't already on the receipt (edit mode can re-return an
+  // existing selection, which the picker itself would dedupe). Returns whether
+  // any were added, so an empty/unmatched/all-duplicate response doesn't report a
+  // phantom fill.
   private handleCategoryAndTagMagicFill(
     formKey: "categories" | "tags",
     value: Category[] | Tag[],
     arrayToFilter: Category[] | Tag[]
-  ): void {
-    const itemsToPush = (arrayToFilter as any[]).filter((item) =>
-      value.map((foundItem) => foundItem.id)?.includes(item.id)
-    );
+  ): boolean {
     const itemsFormArray = this.form.get(formKey) as FormArray;
+    const existingIds = new Set(
+      itemsFormArray.controls.map((control) => control.value?.id)
+    );
+    const magicIds = value.map((foundItem) => foundItem.id);
+    const itemsToPush = (arrayToFilter as any[]).filter(
+      (item) => magicIds.includes(item.id) && !existingIds.has(item.id)
+    );
     itemsToPush.forEach((c) => {
       itemsFormArray.push(this.formBuilder.control(c));
     });
+    return itemsToPush.length > 0;
   }
 
   private formatMagicFilledDate(date: string): Date {
@@ -690,16 +1097,31 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   public duplicateReceipt(): void {
-    this.receiptService
-      .duplicateReceipt(this.originalReceipt?.id as number)
+    const dialogRef = this.matDialog.open(ConfirmationDialogComponent);
+
+    dialogRef.componentInstance.headerText = "Duplicate Receipt";
+    dialogRef.componentInstance.dialogContent = `Are you sure you would like to duplicate the receipt ${this.originalReceipt?.name}?`;
+
+    dialogRef
+      .afterClosed()
       .pipe(
         take(1),
-        tap((r: Receipt) => {
-          this.duplicatedReceiptId.set(r.id.toString());
-          this.duplicatedSnackbarRef = this.snackbarService.successFromTemplate(
-            this.successDuplicateSnackbar(),
-            { duration: 8000 }
-          );
+        tap((confirmed) => {
+          if (confirmed) {
+            this.receiptService
+              .duplicateReceipt(this.originalReceipt?.id as number)
+              .pipe(
+                take(1),
+                tap((r: Receipt) => {
+                  this.duplicatedReceiptId.set(r.id.toString());
+                  this.duplicatedSnackbarRef = this.snackbarService.successFromTemplate(
+                    this.successDuplicateSnackbar(),
+                    { duration: 8000 }
+                  );
+                })
+              )
+              .subscribe();
+          }
         })
       )
       .subscribe();
@@ -740,27 +1162,34 @@ export class ReceiptFormComponent implements OnInit {
   }
 
   public zoomImageIn(): void {
-    this.carouselComponent().zoomIn();
+    this.carouselComponent()?.zoomIn();
   }
 
   public zoomImageOut(): void {
-    this.carouselComponent().zoomOut();
-  }
-
-  public toggleImagePreviewSize(): void {
-    this.showLargeImagePreview = !this.showLargeImagePreview;
+    this.carouselComponent()?.zoomOut();
   }
 
   public expandImage(): void {
-    this.matDialog.open(this.expandedImageTemplate(), {
+    // No maxHeight on purpose: leaving it undefined is what puts the CDK on its
+    // flush-vertical path, giving the pane the full viewport height the canvas
+    // stage then fills. Setting one silently re-centres the dialog.
+    this.expandedImageDialog = this.matDialog.open(this.expandedImageTemplate(), {
       width: "75%",
       height: "100%",
+      // The close button is the only tabbable control, so the default
+      // "first-tabbable" focus opens the viewer with a focus ring drawn around
+      // it, which reads as a selected button over the image.
+      autoFocus: "dialog",
     });
+  }
+
+  public closeExpandedImage(): void {
+    this.expandedImageDialog?.close();
   }
 
   // TODO: Add functionality to dashboard
   public downloadImage(): void {
-    const currentImage = this.images()[this.carouselComponent().currentlyShownImageIndex];
+    const currentImage = this.images()[this.currentImageIndex];
     this.receiptImageService.downloadReceiptImageById(currentImage.id)
       .pipe(
         take(1),
@@ -889,30 +1318,19 @@ export class ReceiptFormComponent implements OnInit {
 
     this.customFieldsStatefulMenuItems = newCustomFields;
 
+    const customFieldId = Number(item.value);
+    // Either direction hands the field to the user: a group default they toggled
+    // off - or off and back on - must never be swapped out by a later group
+    // change.
+    this.autoAppliedCustomFieldIds.delete(customFieldId);
+
     // Custom field was just selected
     if (this.customFieldsStatefulMenuItems[selectedItemIndex].selected) {
-      const customField = this.customFields.find(customField => customField.id === Number(item.value));
-      if (customField) {
-        const customFieldValue = {
-          customFieldId: customField.id,
-          receiptId: this.originalReceipt?.id ?? 0,
-          value: null
-        } as any as CustomFieldValue;
-        this.customFieldsFormArray.push(this.buildCustomOptionFormGroup(customFieldValue));
-      }
+      this.addCustomFieldControl(customFieldId);
     } else {
       // Custom field was just removed
-      const formArrayIndex = this.customFieldsFormArray.controls.findIndex(control => control.value?.["customFieldId"]?.toString() === item.value);
-      this.customFieldsFormArray.removeAt(formArrayIndex);
+      this.removeCustomFieldControl(customFieldId);
     }
-  }
-
-  private updateCustomFields(): void {
-    const formArray = this.customFieldsFormArray;
-
-    this.customFieldsStatefulMenuItems.forEach((item) => {
-
-    });
   }
 
   public submit(): void {
@@ -925,6 +1343,15 @@ export class ReceiptFormComponent implements OnInit {
       return;
     }
 
+    // Mirrors the server's role-required fields check, so the user is told
+    // before a round trip rather than by a 400.
+    const missingComment = this.isCommentMissing();
+    const missingImage = this.isImageMissing();
+    if (missingComment || missingImage) {
+      this.snackbarService.error(missingReceiptRequirementsMessage(missingComment, missingImage));
+      return;
+    }
+
     if (this.originalReceipt) {
       this.updateReceipt();
     } else if (this.mode === FormMode.add) {
@@ -932,33 +1359,20 @@ export class ReceiptFormComponent implements OnInit {
     }
   }
 
+  // One multipart call carries the receipt, its comments (on the form value)
+  // and its queued images, so the server sees the images at create time and the
+  // create is atomic - there is no "receipt added but images failed" state.
   private createReceipt(): void {
-    let route: string;
     this.receiptService
-      .createReceipt(this.form.value)
+      .createReceiptWithFiles(
+        this.form.value,
+        this.filesToUpload().map((file) => file.file)
+      )
       .pipe(
         take(1),
         tap((r: Receipt) => {
           this.snackbarService.success("Successfully added receipt");
-          route = `/receipts/${r.id}/view`;
-        }),
-        switchMap((receipt) =>
-          iif(
-            () => this.filesToUpload().length > 0,
-            forkJoin(
-              this.filesToUpload().map((file) => {
-                return this.receiptImageService.uploadReceiptImage(
-                  file.file,
-                  receipt.id,
-                  ""
-                );
-              })
-            ),
-            of("")
-          )
-        ),
-        tap(() => {
-          this.router.navigate([route]);
+          this.router.navigate([`/receipts/${r.id}/view`]);
         })
       )
       .subscribe();

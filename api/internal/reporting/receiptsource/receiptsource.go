@@ -14,6 +14,7 @@ package receiptsource
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"receipt-wrangler/api/internal/models"
@@ -60,6 +61,54 @@ const customFieldKeyPrefix = "custom_"
 // CustomFieldKey returns the field key a custom field is referenced by.
 func CustomFieldKey(customFieldID uint) reporting.FieldKey {
 	return reporting.FieldKey(customFieldKeyPrefix + strconv.FormatUint(uint64(customFieldID), 10))
+}
+
+// ParseCustomFieldKey returns the custom field id a key refers to, and whether
+// the key is a custom field key at all. It is the inverse of CustomFieldKey, and
+// deliberately strict: only "custom_" followed by digits alone qualifies, so a
+// derived period key ("custom_7_month") and anything hand-crafted are rejected.
+//
+// The receipts table sorts by these same keys, which is why this lives beside
+// the key builder rather than being re-derived wherever a key is read.
+func ParseCustomFieldKey(key string) (uint, bool) {
+	digits, found := strings.CutPrefix(key, customFieldKeyPrefix)
+	if !found || len(digits) == 0 {
+		return 0, false
+	}
+
+	// ParseUint would accept a leading "+", which CustomFieldKey never emits.
+	for _, character := range digits {
+		if character < '0' || character > '9' {
+			return 0, false
+		}
+	}
+
+	// 32 bits, not 64: the result is a models.CustomField id, which is a uint -
+	// and a uint is 32 bits on a 32-bit build, where parsing to 64 would truncate
+	// and name a DIFFERENT field ("custom_4294967297" would resolve to field 1).
+	// No id reaches 2^32, so the cap only rejects keys that cannot name a real
+	// field, which the caller already treats like any other malformed key.
+	customFieldID, err := strconv.ParseUint(digits, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return uint(customFieldID), true
+}
+
+// CustomFieldPeriodKeys returns the day/month/year keys derived from a date
+// custom field, the custom-field counterpart of date_day / date_month /
+// date_year. A report groups by one of these to bucket by calendar period;
+// grouping by the raw field buckets on the exact instant, which puts every
+// receipt in its own group.
+//
+// They cannot collide with another custom field's key: CustomFieldKey is always
+// "custom_" followed by digits alone, so no id produces "custom_7_month".
+func CustomFieldPeriodKeys(customFieldID uint) (day, month, year reporting.FieldKey) {
+	base := string(CustomFieldKey(customFieldID))
+	return reporting.FieldKey(base + "_day"),
+		reporting.FieldKey(base + "_month"),
+		reporting.FieldKey(base + "_year")
 }
 
 // builtinFields returns the fields every receipt report may reference.
@@ -150,6 +199,11 @@ func New(customFields []models.CustomField) (Source, error) {
 			Label:    customField.Name,
 			DataType: dataTypeFor(customField.Type),
 		})
+
+		if customField.Type == models.DATE {
+			day, month, year := CustomFieldPeriodKeys(customField.ID)
+			fields = append(fields, dateFieldRefs(day, month, year, customField.Name)...)
+		}
 	}
 
 	catalog, err := reporting.NewFieldCatalog(fields...)
@@ -162,7 +216,8 @@ func New(customFields []models.CustomField) (Source, error) {
 }
 
 // Catalog returns the fields a report run against this source may reference:
-// every built-in, plus one per custom field.
+// every built-in, plus one per custom field — and, for a date custom field,
+// its three derived calendar-period fields as well.
 func (s Source) Catalog() reporting.FieldCatalog { return s.catalog }
 
 // dataTypeFor maps a custom field's type onto the engine's. A currency custom
@@ -242,8 +297,9 @@ func setDateParts(row reporting.Row, dayKey, monthKey, yearKey reporting.FieldKe
 }
 
 // addCustomFields resolves each of a receipt's custom field values against its
-// definition. A field the receipt carries no value for simply has no entry,
-// which reads as null when measured and as (None) when grouped.
+// definition, writing a date field's calendar-period parts alongside its value.
+// A field the receipt carries no value for simply has no entry, which reads as
+// null when measured and as (None) when grouped.
 //
 // Where a receipt holds several values for one field, the one with the lowest id
 // wins. Nothing stops it holding several: custom_field_values carries no unique
@@ -274,6 +330,14 @@ func (s Source) addCustomFields(row reporting.Row, receipt *models.Receipt) {
 
 		winners[key] = customFieldValue.ID
 		row[key] = []reporting.Value{value}
+
+		// A date field also carries its calendar-period fields. This runs again
+		// whenever a lower-id value takes over, and setDateParts overwrites, so
+		// the parts always describe the value that actually won.
+		if moment, isDate := value.Time(); isDate {
+			day, month, year := CustomFieldPeriodKeys(customFieldValue.CustomFieldId)
+			setDateParts(row, day, month, year, moment)
+		}
 	}
 }
 

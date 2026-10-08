@@ -267,16 +267,6 @@
     }
   }
 
-  &__kind-badge {
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    border-radius: 5px;
-    padding: 2px 6px;
-    flex: none;
-  }
-
   &__col-text {
     flex: 1;
     min-width: 0;
@@ -347,7 +337,8 @@
   }
 }
 
-// Column kind accents (badge + icon chip)
+// Column kind accents for the row's icon chip. The kind BADGE is the shared
+// app-badge, which carries its own tones - see KIND_META's `tone`.
 .kind-dimension {
   color: #64748b;
   background: rgba(100, 116, 139, 0.12);

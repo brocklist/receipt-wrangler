@@ -1,4 +1,5 @@
-import { ReceiptPagedRequestFilter } from "../open-api";
+import { ReceiptDateFilterFieldKey } from "../constants/receipt-filter-fields.constant";
+import { FilterOperation, ReceiptPagedRequestFilter } from "../open-api";
 import { ReceiptTableInterface } from "../interfaces";
 import { ReceiptTableColumnConfig } from "../interfaces/receipt-table-column-config.interface";
 
@@ -26,6 +27,23 @@ export class SetReceiptFilter {
   constructor(public data: ReceiptPagedRequestFilter) {}
 }
 
+export class SetReceiptFilterField {
+  static readonly type = "[ReceiptTable] Set Filter Field";
+
+  constructor(
+    public field: keyof ReceiptPagedRequestFilter,
+    /** `null` clears the field back to its default empty shape. */
+    public entry: { operation: FilterOperation | null; value: unknown } | null,
+  ) {}
+}
+
+export class SetQuickDateField {
+  static readonly type = "[ReceiptTable] Set Quick Date Field";
+
+  /** Which date field the quick date control writes to from now on. */
+  constructor(public field: ReceiptDateFilterFieldKey) {}
+}
+
 export class ResetReceiptFilter {
   static readonly type = "[ReceiptTable] Reset Filter";
 
@@ -36,4 +54,11 @@ export class SetColumnConfig {
   static readonly type = "[ReceiptTable] Set Column Config";
 
   constructor(public columnConfig: ReceiptTableColumnConfig[]) {}
+}
+
+export class SetSummaryConfigGroupId {
+  static readonly type = "[ReceiptTable] Set Summary Config Group Id";
+
+  /** Whose summary configuration to apply on the "All" group. */
+  constructor(public groupId: number) {}
 }

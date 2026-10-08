@@ -22,7 +22,7 @@ func seedAppUser(t *testing.T, username string, appPerms []string) uint {
 	t.Helper()
 	db := repositories.GetDB()
 
-	role, err := repositories.NewRoleRepository(nil).CreateAppRole("App "+username, "", appPerms)
+	role, err := repositories.NewRoleRepository(nil).CreateAppRole("App "+username, "", appPerms, false)
 	if err != nil {
 		t.Fatalf("seed app role: %v", err)
 	}
@@ -43,7 +43,7 @@ func joinGroup(t *testing.T, userId uint, groupName string, groupPerms []string)
 	if err := db.Create(&group).Error; err != nil {
 		t.Fatalf("seed group: %v", err)
 	}
-	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Role "+groupName, "", groupPerms, nil, nil, nil, false)
+	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Role "+groupName, "", groupPerms, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatalf("seed group role: %v", err)
 	}

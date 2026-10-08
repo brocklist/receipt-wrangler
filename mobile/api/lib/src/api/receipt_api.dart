@@ -17,6 +17,8 @@ import 'package:openapi/src/model/permission.dart';
 import 'package:openapi/src/model/receipt.dart';
 import 'package:openapi/src/model/receipt_paged_request_command.dart';
 import 'package:openapi/src/model/receipt_status.dart';
+import 'package:openapi/src/model/receipt_summary.dart';
+import 'package:openapi/src/model/receipt_summary_command.dart';
 import 'package:openapi/src/model/upsert_receipt_command.dart';
 
 class ReceiptApi {
@@ -134,7 +136,7 @@ class ReceiptApi {
   }
 
   /// Create receipt
-  /// This will create a receipt [SYSTEM USER]
+  /// This will create a receipt [SYSTEM USER]. Deprecated in favour of createReceiptWithFiles, which carries the receipt&#39;s images in the same call; kept for already-released clients. It enforces the caller&#39;s role-required fields, so when the caller&#39;s group role requires an image this endpoint always returns 400 (it cannot carry one).
   ///
   /// Parameters:
   /// * [upsertReceiptCommand] - Receipt to create
@@ -147,6 +149,7 @@ class ReceiptApi {
   ///
   /// Returns a [Future] containing a [Response] with a [Receipt] as data
   /// Throws [DioException] if API call or serialization fails
+  @Deprecated('This operation has been deprecated')
   Future<Response<Receipt>> createReceipt({ 
     required UpsertReceiptCommand upsertReceiptCommand,
     CancelToken? cancelToken,
@@ -186,6 +189,116 @@ class ReceiptApi {
     try {
       const _type = FullType(UpsertReceiptCommand);
       _bodyData = _serializers.serialize(upsertReceiptCommand, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Receipt? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Receipt),
+      ) as Receipt;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Receipt>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Create receipt with files
+  /// Creates a receipt, its comments and its images in one atomic call: a failure anywhere leaves no receipt, image or file behind. Requires group.receipts.create in the receipt&#39;s group. Every file must be an image or PDF (checked before anything is written). Returns 400 when the caller&#39;s group role requires a comment (key &#x60;comments&#x60;) or an image (key &#x60;files&#x60;) that the request does not carry. [SYSTEM USER]
+  ///
+  /// Parameters:
+  /// * [receipt] 
+  /// * [files] - Images (or PDFs) to attach to the new receipt. Together with the receipt they share the server's 50 MB request body limit.
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Receipt] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Receipt>> createReceiptWithFiles({ 
+    required UpsertReceiptCommand receipt,
+    BuiltList<MultipartFile>? files,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/receipt/withFiles';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'apiKey',
+            'name': 'apiKeyAuth',
+            'keyName': 'Authorization',
+            'where': 'header',
+          },{
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'multipart/form-data',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      _bodyData = FormData.fromMap(<String, dynamic>{
+        r'receipt': encodeFormParameter(_serializers, receipt, const FullType(UpsertReceiptCommand)),
+        if (files != null) r'files': files.toList(),
+      });
 
     } catch(error, stackTrace) {
       throw DioException(
@@ -441,6 +554,114 @@ class ReceiptApi {
     );
   }
 
+  /// Gets the receipt summary for a group
+  /// Returns the block of totals rendered under the receipts table: a receipt count and amount total over the WHOLE filtered result set (not the current page), then the same figures per configured status. Which statuses break out and which currency custom fields are totalled come from the group&#39;s receipt settings, not from the request. Gated on group.receipts.read, the same permission as the receipts it aggregates. [SYSTEM USER]
+  ///
+  /// Parameters:
+  /// * [groupId] - Summarize the receipts that belong to groupId
+  /// * [receiptSummaryCommand] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ReceiptSummary] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ReceiptSummary>> getReceiptSummaryForGroup({ 
+    required int groupId,
+    required ReceiptSummaryCommand receiptSummaryCommand,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/receipt/group/{groupId}/summary'.replaceAll('{' r'groupId' '}', encodeQueryParameter(_serializers, groupId, const FullType(int)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'apiKey',
+            'name': 'apiKeyAuth',
+            'keyName': 'Authorization',
+            'where': 'header',
+          },{
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ReceiptSummaryCommand);
+      _bodyData = _serializers.serialize(receiptSummaryCommand, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ReceiptSummary? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ReceiptSummary),
+      ) as ReceiptSummary;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ReceiptSummary>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// Gets receipts
   /// This will return receipts with the option to sort and filter [SYSTEM USER]
   ///
@@ -625,6 +846,7 @@ class ReceiptApi {
   /// * [statuses] 
   /// * [categoryIds] 
   /// * [tagIds] 
+  /// * [comments] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -641,6 +863,7 @@ class ReceiptApi {
     required BuiltList<ReceiptStatus> statuses,
     BuiltList<String>? categoryIds,
     BuiltList<String>? tagIds,
+    BuiltList<String>? comments,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -683,6 +906,7 @@ class ReceiptApi {
         r'statuses': encodeFormParameter(_serializers, statuses, const FullType(BuiltList, [FullType(ReceiptStatus)])),
         if (categoryIds != null) r'categoryIds': encodeFormParameter(_serializers, categoryIds, const FullType(BuiltList, [FullType(String)])),
         if (tagIds != null) r'tagIds': encodeFormParameter(_serializers, tagIds, const FullType(BuiltList, [FullType(String)])),
+        if (comments != null) r'comments': encodeFormParameter(_serializers, comments, const FullType(BuiltList, [FullType(String)])),
       });
 
     } catch(error, stackTrace) {

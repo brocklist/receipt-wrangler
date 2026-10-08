@@ -10,6 +10,27 @@ import (
 	"strings"
 )
 
+// Bounds on the configurable refresh-token lifetimes. They live here rather than
+// alongside the resolver in services/ because internal/commands cannot import
+// internal/services, and the validation and the read-side clamp must agree.
+const (
+	MinRefreshTokenValidForHours = 1
+	MaxRefreshTokenValidForHours = 720 // 30 days
+)
+
+// Bounds and default for the temp-file retention window, here for the same
+// reason as the refresh-token bounds above: the validator below and the
+// read-side clamp in wranglerasynq must not drift.
+//
+// The floor is a day because the window doubles as the grace period a user has
+// to rerun or download a failed upload — anything shorter reintroduces the bug
+// this setting exists to fix. The ceiling is a year.
+const (
+	MinTempFileRetentionHours     = 24
+	MaxTempFileRetentionHours     = 8760 // 365 days
+	DefaultTempFileRetentionHours = 720  // 30 days
+)
+
 type UpsertSystemSettingsCommand struct {
 	EnableLocalSignUp                   bool                                  `json:"enableLocalSignUp"`
 	DebugOcr                            bool                                  `json:"debugOcr"`
@@ -27,6 +48,16 @@ type UpsertSystemSettingsCommand struct {
 	TaskQueueConfigurations             []UpsertTaskQueueConfigurationCommand `json:"taskQueueConfigurations"`
 	McpEnabled                          bool                                  `json:"mcpEnabled"`
 	McpPublicUrl                        string                                `json:"mcpPublicUrl"`
+	ShowLoginQr                         bool                                  `json:"showLoginQr"`
+	MobileServerUrl                     string                                `json:"mobileServerUrl"`
+	// Pointers so an omitted key is distinguishable from an explicit 0. The
+	// repository writes every column (Select("*")), so a plain int would persist
+	// as 0 and silently reset a configured value to the default whenever a
+	// client PUTs a body without these keys. Same reasoning as the pointer
+	// fields on UpdateGroupReceiptSettingsCommand.
+	RefreshTokenValidForHours    *int `json:"refreshTokenValidForHours"`
+	McpRefreshTokenValidForHours *int `json:"mcpRefreshTokenValidForHours"`
+	TempFileRetentionHours       *int `json:"tempFileRetentionHours"`
 }
 
 func (command *UpsertSystemSettingsCommand) LoadDataFromRequest(w http.ResponseWriter, r *http.Request) error {
@@ -99,19 +130,79 @@ func (command *UpsertSystemSettingsCommand) Validate() structs.ValidatorError {
 	trimmedMcpPublicUrl := strings.TrimSpace(command.McpPublicUrl)
 	if command.McpEnabled && len(trimmedMcpPublicUrl) == 0 {
 		errorMap["mcpPublicUrl"] = "A public URL is required to enable the MCP server"
-	} else if len(trimmedMcpPublicUrl) > 0 && !isValidMcpPublicUrl(trimmedMcpPublicUrl) {
+	} else if len(trimmedMcpPublicUrl) > 0 && !isValidAbsoluteUrl(trimmedMcpPublicUrl) {
 		errorMap["mcpPublicUrl"] = "MCP public URL must be an absolute origin like https://receipts.example.com"
+	}
+
+	trimmedMobileServerUrl := strings.TrimSpace(command.MobileServerUrl)
+	if command.ShowLoginQr && len(trimmedMobileServerUrl) == 0 {
+		errorMap["mobileServerUrl"] = "A server URL is required to show the login QR code"
+	} else if len(trimmedMobileServerUrl) > 0 && !isValidAbsoluteUrl(trimmedMobileServerUrl) {
+		errorMap["mobileServerUrl"] = "Mobile server URL must be an absolute URL like https://receipts.example.com/api"
+	}
+
+	if msg := validateRefreshTokenValidForHours(command.RefreshTokenValidForHours); len(msg) > 0 {
+		errorMap["refreshTokenValidForHours"] = msg
+	}
+
+	if msg := validateRefreshTokenValidForHours(command.McpRefreshTokenValidForHours); len(msg) > 0 {
+		errorMap["mcpRefreshTokenValidForHours"] = msg
+	}
+
+	if msg := validateTempFileRetentionHours(command.TempFileRetentionHours); len(msg) > 0 {
+		errorMap["tempFileRetentionHours"] = msg
 	}
 
 	return vErr
 }
 
-// isValidMcpPublicUrl reports whether the value is an absolute http(s) origin.
-// A scheme and host are required; paths/queries/fragments are tolerated here
-// because they are stripped to the bare origin when the URL is consumed.
-func isValidMcpPublicUrl(raw string) bool {
+// validateTempFileRetentionHours bounds the temp-file retention window, returning
+// an empty string when the value is acceptable.
+//
+// Same two-flavoured "no value" as the refresh-token lifetimes: a nil pointer
+// means the key was omitted and leaves the stored value alone, while an explicit
+// 0 means "unset" and lets the read-side clamp fall back to the built-in default.
+func validateTempFileRetentionHours(hours *int) string {
+	if hours == nil || *hours == 0 {
+		return ""
+	}
+
+	if *hours < MinTempFileRetentionHours || *hours > MaxTempFileRetentionHours {
+		return "Temporary file retention must be between 24 and 8760 hours (1 year)"
+	}
+
+	return ""
+}
+
+// validateRefreshTokenValidForHours bounds a refresh-token lifetime, returning an
+// empty string when the value is acceptable.
+//
+// A nil pointer means the key was omitted, which leaves the stored value alone
+// (see ApplyOmittedLifetimes) and is always valid. An explicit 0 means "unset":
+// the read side falls back to the built-in default. Shared by the app and MCP
+// settings so the two cannot drift.
+func validateRefreshTokenValidForHours(hours *int) string {
+	if hours == nil || *hours == 0 {
+		return ""
+	}
+
+	if *hours < MinRefreshTokenValidForHours || *hours > MaxRefreshTokenValidForHours {
+		return "Refresh token lifetime must be between 1 and 720 hours (30 days)"
+	}
+
+	return ""
+}
+
+// isValidAbsoluteUrl reports whether the value is an absolute http(s) URL.
+// A scheme and host are required; paths/queries/fragments are tolerated.
+//
+// Embedded credentials (https://user:token@host) are rejected: both settings
+// this guards are published verbatim to unauthenticated clients — the mobile
+// server URL is encoded into the login QR served by the public /featureConfig,
+// and the MCP public URL is echoed in the OAuth discovery metadata.
+func isValidAbsoluteUrl(raw string) bool {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
+	if err != nil || parsed.Host == "" || parsed.User != nil {
 		return false
 	}
 
@@ -137,4 +228,55 @@ func (command *UpsertSystemSettingsCommand) ToSystemSettings(id uint) (models.Sy
 	}
 
 	return systemSettings, nil
+}
+
+// OmittedLifetimeColumns names the pointer-backed duration fields the request did
+// not send, so the repository can leave those columns out of the UPDATE entirely.
+// Despite the name it covers every such field, not only the token lifetimes.
+//
+// Skipping the column is what makes a concurrent update safe. Copying the stored
+// value onto the row instead (see ApplyOmittedLifetimes) would still write it,
+// so two requests that each set one field and omit the other would clobber
+// each other with the values they read before the write. A column that is never
+// written cannot be clobbered, and unlike a row lock this works identically on
+// SQLite, MySQL and Postgres.
+func (command *UpsertSystemSettingsCommand) OmittedLifetimeColumns() []string {
+	columns := make([]string, 0, 3)
+
+	if command.RefreshTokenValidForHours == nil {
+		columns = append(columns, "RefreshTokenValidForHours")
+	}
+
+	if command.McpRefreshTokenValidForHours == nil {
+		columns = append(columns, "McpRefreshTokenValidForHours")
+	}
+
+	if command.TempFileRetentionHours == nil {
+		columns = append(columns, "TempFileRetentionHours")
+	}
+
+	return columns
+}
+
+// ApplyOmittedLifetimes carries the stored values of the pointer-backed duration
+// fields onto the settings a PUT is about to write, for any key the request
+// omitted. Despite the name it covers every such field, not only the token
+// lifetimes.
+//
+// ToSystemSettings round-trips the command through JSON, so a nil pointer lands
+// as 0 on the model. The columns themselves are excluded from the UPDATE by
+// OmittedLifetimeColumns, so this exists purely so the object echoed back in the
+// response carries the stored value rather than a misleading 0.
+func (command *UpsertSystemSettingsCommand) ApplyOmittedLifetimes(existing models.SystemSettings, updated *models.SystemSettings) {
+	if command.RefreshTokenValidForHours == nil {
+		updated.RefreshTokenValidForHours = existing.RefreshTokenValidForHours
+	}
+
+	if command.McpRefreshTokenValidForHours == nil {
+		updated.McpRefreshTokenValidForHours = existing.McpRefreshTokenValidForHours
+	}
+
+	if command.TempFileRetentionHours == nil {
+		updated.TempFileRetentionHours = existing.TempFileRetentionHours
+	}
 }

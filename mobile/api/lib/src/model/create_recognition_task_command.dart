@@ -21,6 +21,7 @@ part 'create_recognition_task_command.g.dart';
 /// * [status] 
 /// * [categoryIds] 
 /// * [tagIds] 
+/// * [comment] - Optional quick scan receipt comment; group and role rules may require it.
 @BuiltValue()
 abstract class CreateRecognitionTaskCommand implements Built<CreateRecognitionTaskCommand, CreateRecognitionTaskCommandBuilder> {
   @BuiltValueField(wireName: r'clientRequestId')
@@ -40,13 +41,17 @@ abstract class CreateRecognitionTaskCommand implements Built<CreateRecognitionTa
 
   @BuiltValueField(wireName: r'status')
   ReceiptStatus? get status;
-  // enum statusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  ,  };
+  // enum statusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  DECLINED,  ,  };
 
   @BuiltValueField(wireName: r'categoryIds')
   BuiltList<int>? get categoryIds;
 
   @BuiltValueField(wireName: r'tagIds')
   BuiltList<int>? get tagIds;
+
+  /// Optional quick scan receipt comment; group and role rules may require it.
+  @BuiltValueField(wireName: r'comment')
+  String? get comment;
 
   CreateRecognitionTaskCommand._();
 
@@ -118,6 +123,13 @@ class _$CreateRecognitionTaskCommandSerializer implements PrimitiveSerializer<Cr
       yield serializers.serialize(
         object.tagIds,
         specifiedType: const FullType(BuiltList, [FullType(int)]),
+      );
+    }
+    if (object.comment != null) {
+      yield r'comment';
+      yield serializers.serialize(
+        object.comment,
+        specifiedType: const FullType(String),
       );
     }
   }
@@ -198,6 +210,13 @@ class _$CreateRecognitionTaskCommandSerializer implements PrimitiveSerializer<Cr
             specifiedType: const FullType(BuiltList, [FullType(int)]),
           ) as BuiltList<int>;
           result.tagIds.replace(valueDes);
+          break;
+        case r'comment':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.comment = valueDes;
           break;
         default:
           unhandled.add(key);

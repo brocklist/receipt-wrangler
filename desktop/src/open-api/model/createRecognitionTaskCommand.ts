@@ -19,6 +19,10 @@ export interface CreateRecognitionTaskCommand {
     status?: ReceiptStatus;
     categoryIds?: Array<number>;
     tagIds?: Array<number>;
+    /**
+     * Optional quick scan receipt comment; group and role rules may require it.
+     */
+    comment?: string;
 }
 export namespace CreateRecognitionTaskCommand {
 }

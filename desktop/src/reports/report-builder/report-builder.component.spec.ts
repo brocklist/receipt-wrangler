@@ -20,7 +20,11 @@ import { AuthState } from "../../store";
 import { SetPermissions } from "../../store/auth.state.actions";
 import { buildReceiptFilterForm } from "../../utils/receipt-filter";
 import { ReportBuilderValue, toReportRequestCommand } from "../models/report-command.mapper";
-import { buildColumnGroup, readStringArray } from "../models/report-form.factory";
+import {
+  buildColumnGroup,
+  readGroupByFields,
+  readStringArray,
+} from "../models/report-form.factory";
 import { ReportRunnerService } from "../services/report-runner.service";
 import { ReportBuilderComponent } from "./report-builder.component";
 
@@ -431,7 +435,12 @@ describe("ReportBuilderComponent", () => {
     const configuration: ReportRequestCommand = {
       name: "Full Report",
       groupIds: ["3", "7"],
-      period: { preset: ReportPeriod.PresetEnum.Custom, startDate: "2026-03-01", endDate: "2026-03-31" },
+      period: {
+        preset: ReportPeriod.PresetEnum.Custom,
+        startDate: "2026-03-01",
+        endDate: "2026-03-31",
+        dateField: "resolvedDate",
+      },
       filter,
       groupBy: ["group", "category"],
       detail: { mode: ReportDetail.ModeEnum.Aggregate, by: "category" },
@@ -472,6 +481,7 @@ describe("ReportBuilderComponent", () => {
     expect(form.get("period.preset")!.value).toBe(ReportPeriod.PresetEnum.Custom);
     expect([start.getFullYear(), start.getMonth(), start.getDate()]).toEqual([2026, 2, 1]);
     expect([end.getFullYear(), end.getMonth(), end.getDate()]).toEqual([2026, 2, 31]);
+    expect(form.get("period.dateField")!.value).toBe("resolvedDate");
 
     // Every builder filter field's value + operation.
     expect(form.get("filter.name.value")!.value).toBe("coffee");
@@ -486,7 +496,7 @@ describe("ReportBuilderComponent", () => {
     expect(form.get("filter.status.value")!.value).toEqual(["OPEN"]);
 
     // Group-by (values), detail mode + by.
-    expect(readStringArray(form.get("groupBy") as FormArray)).toEqual(["group", "category"]);
+    expect(readGroupByFields(form.get("groupBy") as FormArray)).toEqual(["group", "category"]);
     expect(form.get("detail.mode")!.value).toBe(ReportDetail.ModeEnum.Aggregate);
     expect(form.get("detail.by")!.value).toBe("category");
 

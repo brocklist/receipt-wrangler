@@ -6,6 +6,7 @@ import { RouterLink } from "@angular/router";
 import { AutocompleteModule } from "../autocomplete/autocomplete.module";
 import { ButtonModule } from "../button";
 import { CheckboxModule } from "../checkbox/checkbox.module";
+import { DirectivesModule } from "../directives";
 import { InputModule } from "../input";
 import { PipesModule } from "../pipes";
 import { SelectModule } from "../select/select.module";
@@ -13,6 +14,7 @@ import { SharedUiModule } from "../shared-ui/shared-ui.module";
 import { TableModule } from "../table/table.module";
 import { AiTypePipe } from "./pipes/ai-type.pipe";
 import { OcrEnginePipe } from "./pipes/ocr-engine.pipe";
+import { UrlHintPipe } from "./pipes/url-hint.pipe";
 import { UrlLabelPipe } from "./pipes/url-label.pipe";
 import {
   ReceiptProcessingSettingsChildSystemTaskAccordionComponent
@@ -25,6 +27,7 @@ import { ReceiptProcessingSettingsTableComponent } from "./receipt-processing-se
   declarations: [ReceiptProcessingSettingsTableComponent, ReceiptProcessingSettingsFormComponent, ReceiptProcessingSettingsChildSystemTaskAccordionComponent],
   imports: [
     CommonModule,
+    DirectivesModule,
     TableModule,
     SharedUiModule,
     RouterLink,
@@ -36,6 +39,7 @@ import { ReceiptProcessingSettingsTableComponent } from "./receipt-processing-se
     AiTypePipe,
     OcrEnginePipe,
     UrlLabelPipe,
+    UrlHintPipe,
     ButtonModule,
     MatTooltip,
     CheckboxModule

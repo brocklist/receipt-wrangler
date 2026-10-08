@@ -29,6 +29,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(CheckReceiptProcessingSettingsConnectivityCommand.serializer)
       ..add(Claims.serializer)
       ..add(Comment.serializer)
+      ..add(CreateRecognitionTaskCommand.serializer)
       ..add(CurrencySeparator.serializer)
       ..add(CurrencySymbolPosition.serializer)
       ..add(CustomField.serializer)
@@ -44,6 +45,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(FileDataView.serializer)
       ..add(FilterOperation.serializer)
       ..add(GetNewRefreshToken200Response.serializer)
+      ..add(GetRecognitionTasksResponse.serializer)
       ..add(GetSystemTaskCommand.serializer)
       ..add(Group.serializer)
       ..add(GroupFilter.serializer)
@@ -80,7 +82,16 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(ReceiptPagedRequestCommand.serializer)
       ..add(ReceiptPagedRequestFilter.serializer)
       ..add(ReceiptProcessingSettings.serializer)
+      ..add(ReceiptRequirements.serializer)
       ..add(ReceiptStatus.serializer)
+      ..add(ReceiptSummary.serializer)
+      ..add(ReceiptSummaryCommand.serializer)
+      ..add(ReceiptSummaryCustomFieldTotal.serializer)
+      ..add(ReceiptSummaryPosition.serializer)
+      ..add(ReceiptSummaryRow.serializer)
+      ..add(RecognitionTask.serializer)
+      ..add(RecognitionTaskStage.serializer)
+      ..add(RecognitionTaskStatus.serializer)
       ..add(ReportColumn.serializer)
       ..add(ReportColumnAggFuncEnum.serializer)
       ..add(ReportColumnKindEnum.serializer)
@@ -96,6 +107,7 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(ReportTemplateGrant.serializer)
       ..add(ReportTemplateOption.serializer)
       ..add(ResetPasswordCommand.serializer)
+      ..add(RetryRecognitionTaskCommand.serializer)
       ..add(Role.serializer)
       ..add(SearchResult.serializer)
       ..add(SignUpCommand.serializer)
@@ -104,12 +116,15 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..add(SystemEmail.serializer)
       ..add(SystemSettings.serializer)
       ..add(SystemTask.serializer)
+      ..add(SystemTaskPagedRequestFilter.serializer)
+      ..add(SystemTaskSourceFileView.serializer)
       ..add(SystemTaskStatus.serializer)
       ..add(SystemTaskType.serializer)
       ..add(Tag.serializer)
       ..add(TagView.serializer)
       ..add(TaskQueueConfiguration.serializer)
       ..add(TokenPair.serializer)
+      ..add(UpdateGroupMemberGrantsCommand.serializer)
       ..add(UpdateGroupReceiptSettingsCommand.serializer)
       ..add(UpdateGroupSettingsCommand.serializer)
       ..add(UpdateProfileCommand.serializer)
@@ -175,14 +190,20 @@ Serializers _$serializers = (Serializers().toBuilder()
           const FullType(BuiltList, const [const FullType(Icon)]),
           () => ListBuilder<Icon>())
       ..addBuilderFactory(
-          const FullType(BuiltList, const [const FullType(Permission)]),
-          () => ListBuilder<Permission>())
+          const FullType(BuiltList, const [const FullType(String)]),
+          () => ListBuilder<String>())
       ..addBuilderFactory(
           const FullType(BuiltMap, const [
             const FullType(String),
-            const FullType(BuiltList, const [const FullType(Permission)])
+            const FullType(BuiltList, const [const FullType(String)])
           ]),
-          () => MapBuilder<String, BuiltList<Permission>>())
+          () => MapBuilder<String, BuiltList<String>>())
+      ..addBuilderFactory(
+          const FullType(BuiltMap, const [
+            const FullType(String),
+            const FullType(ReceiptRequirements)
+          ]),
+          () => MapBuilder<String, ReceiptRequirements>())
       ..addBuilderFactory(
           const FullType(BuiltMap, const [
             const FullType(String),
@@ -246,8 +267,24 @@ Serializers _$serializers = (Serializers().toBuilder()
           const FullType(BuiltList, const [const FullType(PieChartDataPoint)]),
           () => ListBuilder<PieChartDataPoint>())
       ..addBuilderFactory(
-          const FullType(BuiltList, const [const FullType(String)]),
-          () => ListBuilder<String>())
+          const FullType(BuiltList, const [const FullType(ReceiptStatus)]),
+          () => ListBuilder<ReceiptStatus>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList,
+              const [const FullType(ReceiptSummaryCustomFieldTotal)]),
+          () => ListBuilder<ReceiptSummaryCustomFieldTotal>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(ReceiptSummaryRow)]),
+          () => ListBuilder<ReceiptSummaryRow>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(RecognitionTask)]),
+          () => ListBuilder<RecognitionTask>())
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(String)]),
           () => ListBuilder<String>())
@@ -266,6 +303,13 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(String)]),
           () => ListBuilder<String>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(String)]),
+          () => ListBuilder<String>())
+      ..addBuilderFactory(
+          const FullType(
+              BuiltMap, const [const FullType(String), const FullType(String)]),
+          () => MapBuilder<String, String>())
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(ReportColumn)]),
           () => ListBuilder<ReportColumn>())
@@ -359,6 +403,33 @@ Serializers _$serializers = (Serializers().toBuilder()
       ..addBuilderFactory(
           const FullType(BuiltList, const [const FullType(int)]),
           () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(int)]),
+          () => ListBuilder<int>())
+      ..addBuilderFactory(
+          const FullType(BuiltList, const [const FullType(ReceiptStatus)]),
+          () => ListBuilder<ReceiptStatus>())
       ..addBuilderFactory(
           const FullType(BuiltMap, const [
             const FullType(String),

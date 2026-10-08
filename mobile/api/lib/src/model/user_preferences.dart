@@ -24,21 +24,21 @@ part 'user_preferences.g.dart';
 /// * [quickScanDefaultGroupId] - Group foreign key
 /// * [quickScanDefaultPaidById] - User foreign key
 /// * [quickScanDefaultStatus] - Default quick scan status
-/// * [showLargeImagePreviews] - Whether to show large image previews
+/// * [closeChipSelectOnSelect] - Whether multi-select chip fields close their option list after each selection
 /// * [userShortcuts] 
 @BuiltValue()
 abstract class UserPreferences implements BaseModel, Built<UserPreferences, UserPreferencesBuilder> {
   /// Default quick scan status
   @BuiltValueField(wireName: r'quickScanDefaultStatus')
   ReceiptStatus? get quickScanDefaultStatus;
-  // enum quickScanDefaultStatusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  ,  };
+  // enum quickScanDefaultStatusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  DECLINED,  ,  };
 
   @BuiltValueField(wireName: r'userShortcuts')
   BuiltList<UserShortcut>? get userShortcuts;
 
-  /// Whether to show large image previews
-  @BuiltValueField(wireName: r'showLargeImagePreviews')
-  bool? get showLargeImagePreviews;
+  /// Whether multi-select chip fields close their option list after each selection
+  @BuiltValueField(wireName: r'closeChipSelectOnSelect')
+  bool? get closeChipSelectOnSelect;
 
   /// User foreign key
   @BuiltValueField(wireName: r'userId')
@@ -60,6 +60,7 @@ abstract class UserPreferences implements BaseModel, Built<UserPreferences, User
   static void _defaults(UserPreferencesBuilder b) => b
       ..quickScanDefaultStatus = ReceiptStatus.OPEN
       ..createdBy = 0
+      ..closeChipSelectOnSelect = false
       ..quickScanDefaultGroupId = 0
       ..quickScanDefaultPaidById = 0
       ..createdByString = ''
@@ -107,18 +108,18 @@ class _$UserPreferencesSerializer implements PrimitiveSerializer<UserPreferences
         specifiedType: const FullType(BuiltList, [FullType(UserShortcut)]),
       );
     }
-    if (object.showLargeImagePreviews != null) {
-      yield r'showLargeImagePreviews';
-      yield serializers.serialize(
-        object.showLargeImagePreviews,
-        specifiedType: const FullType(bool),
-      );
-    }
     yield r'id';
     yield serializers.serialize(
       object.id,
       specifiedType: const FullType(int),
     );
+    if (object.closeChipSelectOnSelect != null) {
+      yield r'closeChipSelectOnSelect';
+      yield serializers.serialize(
+        object.closeChipSelectOnSelect,
+        specifiedType: const FullType(bool),
+      );
+    }
     yield r'userId';
     yield serializers.serialize(
       object.userId,
@@ -203,19 +204,19 @@ class _$UserPreferencesSerializer implements PrimitiveSerializer<UserPreferences
           ) as BuiltList<UserShortcut>;
           result.userShortcuts.replace(valueDes);
           break;
-        case r'showLargeImagePreviews':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(bool),
-          ) as bool;
-          result.showLargeImagePreviews = valueDes;
-          break;
         case r'id':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
           result.id = valueDes;
+          break;
+        case r'closeChipSelectOnSelect':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.closeChipSelectOnSelect = valueDes;
           break;
         case r'userId':
           final valueDes = serializers.deserialize(

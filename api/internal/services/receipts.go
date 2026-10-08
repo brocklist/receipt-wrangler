@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 	"os"
 	"receipt-wrangler/api/internal/commands"
+	"receipt-wrangler/api/internal/logging"
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
 	"receipt-wrangler/api/internal/repositories"
@@ -99,6 +100,12 @@ func (service ReceiptService) GetReceiptForUser(userId uint, receiptId string) (
 		return models.Receipt{}, err
 	}
 
+	// Mask user references (created-by, charged-to) and drop non-visible comment
+	// authors outside the caller's member-visible set.
+	if err := permissionService.MaskReceiptForMemberVisibility(userId, &receipt); err != nil {
+		return models.Receipt{}, err
+	}
+
 	return receipt, nil
 }
 
@@ -128,8 +135,26 @@ func (service ReceiptService) SearchReceiptsForUser(userId uint, query string, l
 		return nil, err
 	}
 
+	// app.receipts.search only gates search as a feature; it does not grant read
+	// on any particular group. Narrow to the groups where the caller actually
+	// holds group.receipts.read, so search cannot surface receipts from a group
+	// whose role denies receipt read (the search analogue of the All-group gate).
+	readableGroupIds := make([]uint, 0, len(groupIds))
+	for _, groupId := range groupIds {
+		canRead, err := permissionService.HasGroupPermissions(userId, groupId, permissions.GroupReceiptsRead)
+		if err != nil {
+			return nil, err
+		}
+		if canRead {
+			readableGroupIds = append(readableGroupIds, groupId)
+		}
+	}
+	if len(readableGroupIds) == 0 {
+		return results, nil
+	}
+
 	receiptRepository := repositories.NewReceiptRepository(service.TX)
-	receipts, err := receiptRepository.SearchReceiptsByGroupIds(groupIds, query, limit, permissionService.PaidByListResolver(userId))
+	receipts, err := receiptRepository.SearchReceiptsByGroupIds(readableGroupIds, query, limit, permissionService.PaidByListResolver(userId))
 	if err != nil {
 		return nil, err
 	}
@@ -224,28 +249,37 @@ func (service ReceiptService) DeleteReceipt(id string) error {
 	return nil
 }
 
-func (service ReceiptService) QuickScan(
-	token *structs.Claims,
-	paidByUserId uint,
-	groupId uint,
-	status models.ReceiptStatus,
-	categoryIds []uint,
-	tagIds []uint,
-	tempPath string,
-	originalFileName string,
-	asynqTaskId string,
-) (models.Receipt, error) {
+// QuickScanParams carries the inputs for a single quick-scanned file: the caller's claims, the
+// per-file values the handler already resolved against the group's quick-scan configuration, and the
+// uploaded file's location. Grouped into a struct rather than passed positionally because the
+// positional form ends in several interchangeable strings, which is easy to transpose silently.
+type QuickScanParams struct {
+	Token            *structs.Claims
+	PaidByUserId     uint
+	GroupId          uint
+	Status           models.ReceiptStatus
+	CategoryIds      []uint
+	TagIds           []uint
+	Comment          string
+	TempPath         string
+	OriginalFileName string
+	AsynqTaskId      string
+}
+
+func (service ReceiptService) QuickScan(params QuickScanParams) (models.Receipt, error) {
+	token := params.Token
+	groupId := params.GroupId
 	db := repositories.GetDB()
 	systemTaskService := NewSystemTaskService(service.TX)
 	var createdReceipt models.Receipt
 
 	fileRepository := repositories.NewFileRepository(service.TX)
-	fileBytes, err := utils.ReadFile(tempPath)
+	fileBytes, err := utils.ReadFile(params.TempPath)
 	if err != nil {
 		return models.Receipt{}, err
 	}
 
-	fileInfo, err := os.Stat(tempPath)
+	fileInfo, err := os.Stat(params.TempPath)
 	if err != nil {
 		return models.Receipt{}, err
 	}
@@ -257,7 +291,7 @@ func (service ReceiptService) QuickScan(
 
 	magicFillCommand := commands.MagicFillCommand{
 		ImageData: fileBytes,
-		Filename:  originalFileName,
+		Filename:  params.OriginalFileName,
 	}
 
 	receiptRepository := repositories.NewReceiptRepository(service.TX)
@@ -276,7 +310,7 @@ func (service ReceiptService) QuickScan(
 		models.QUICK_SCAN,
 		&token.UserId,
 		&groupId,
-		asynqTaskId, nil)
+		params.AsynqTaskId, nil)
 	if taskErr != nil {
 		return models.Receipt{}, taskErr
 	}
@@ -286,32 +320,86 @@ func (service ReceiptService) QuickScan(
 	}
 
 	if receiptCommand.PaidByUserID == 0 {
-		receiptCommand.PaidByUserID = paidByUserId
+		receiptCommand.PaidByUserID = params.PaidByUserId
 	}
 
 	if len(receiptCommand.Status) == 0 {
-		receiptCommand.Status = models.ReceiptStatus(status)
+		receiptCommand.Status = models.ReceiptStatus(params.Status)
 	}
 
 	receiptCommand.GroupId = groupId
 
-	// Merge the user's quick-scan category/tag picks with whatever the AI auto-assigned (union,
-	// deduped by id). Names are resolved from the ids so the merged selections pass receipt
-	// validation, which requires a category/tag name.
-	receiptCommand.Categories, err = service.mergeQuickScanCategories(receiptCommand.Categories, categoryIds)
-	if err != nil {
-		return models.Receipt{}, err
+	// Record a FAILED system task for any error that aborts the quick scan *before* the
+	// create-receipt transaction (category/tag resolution or receipt validation). The
+	// in-transaction CreateReceipt failure is already covered by CreateReceiptUploadedSystemTask;
+	// this closes the gap where a pre-transaction failure (notably a validation error) left the AI
+	// processing tasks marked SUCCEEDED and no record of why no receipt was created. Chaining a
+	// FAILED child to the quick-scan parent flips that parent to FAILED (see
+	// SystemTaskRepository.CreateSystemTask) so the failure surfaces in the activity feed.
+	// RanByUserId is deliberately left nil so the child stays hidden and only the flipped parent
+	// shows, mirroring the successful RECEIPT_UPLOADED child.
+	recordEarlyQuickScanFailure := func(failureErr error) error {
+		parentTask := quickScanSystemTasks.SystemTask
+		if quickScanSystemTasks.FallbackSystemTask.Status == models.SYSTEM_TASK_SUCCEEDED {
+			parentTask = quickScanSystemTasks.FallbackSystemTask
+		}
+		if parentTask.ID == 0 {
+			return failureErr
+		}
+
+		parentId := parentTask.ID
+		_, taskErr := systemTaskService.CreateSystemTaskFromError(commands.UpsertSystemTaskCommand{
+			Type:                   models.RECEIPT_UPLOADED,
+			AssociatedEntityType:   models.RECEIPT_PROCESSING_SETTINGS,
+			AssociatedEntityId:     parentTask.AssociatedEntityId,
+			StartedAt:              finishedAt,
+			AsynqTaskId:            params.AsynqTaskId,
+			GroupId:                &groupId,
+			AssociatedSystemTaskId: &parentId,
+		}, failureErr)
+		return combineEarlyFailureErrors(failureErr, taskErr)
 	}
 
-	receiptCommand.Tags, err = service.mergeQuickScanTags(receiptCommand.Tags, tagIds)
+	// Resolve the AI-assigned and user-picked category/tag ids to real records: names are filled
+	// from the database (the AI returns ids only, which would otherwise fail receipt validation),
+	// ids that don't resolve are dropped (hallucinated/non-existent), and ids the triggering user
+	// isn't allowed to see are dropped too (defense-in-depth alongside the prompt's grant filter).
+	receiptCommand.Categories, err = service.resolveQuickScanCategories(receiptCommand.Categories, params.CategoryIds, token.UserId, groupId)
 	if err != nil {
-		return models.Receipt{}, err
+		return models.Receipt{}, recordEarlyQuickScanFailure(err)
+	}
+
+	receiptCommand.Tags, err = service.resolveQuickScanTags(receiptCommand.Tags, params.TagIds, token.UserId, groupId)
+	if err != nil {
+		return models.Receipt{}, recordEarlyQuickScanFailure(err)
+	}
+
+	// Append the user's quick-scan comment rather than replacing whatever the AI produced: the
+	// default prompt doesn't ask for comments, but the response is unmarshalled straight into an
+	// UpsertReceiptCommand, so a group running a custom prompt can produce them and they must not be
+	// dropped. UserId is required — UpsertCommentCommand.Validate rejects a nil one, which would fail
+	// the whole receipt. ReceiptId stays unset; it is only required when updating, and CreateReceipt
+	// fills the foreign key through the association.
+	if len(params.Comment) > 0 {
+		commentUserId := token.UserId
+		receiptCommand.Comments = append(receiptCommand.Comments, commands.UpsertCommentCommand{
+			Comment: params.Comment,
+			UserId:  &commentUserId,
+		})
+	}
+
+	// Attach the group's default custom fields (as empty values) when the group opted into applying
+	// them to server-created receipts. Runs after the AI's own custom fields are in the command so
+	// a field the prompt already produced is not duplicated.
+	err = ApplyGroupDefaultCustomFields(service.TX, groupId, &receiptCommand)
+	if err != nil {
+		return models.Receipt{}, recordEarlyQuickScanFailure(err)
 	}
 
 	vErr := receiptCommand.Validate(token.UserId, true)
 	if len(vErr.Errors) > 0 {
 		errBytes, _ := json.Marshal(vErr.Errors)
-		return models.Receipt{}, fmt.Errorf("receipt validation failed: %s", string(errBytes))
+		return models.Receipt{}, recordEarlyQuickScanFailure(fmt.Errorf("receipt validation failed: %s", string(errBytes)))
 	}
 
 	err = db.Transaction(func(tx *gorm.DB) error {
@@ -341,7 +429,7 @@ func (service ReceiptService) QuickScan(
 		}
 
 		fileData := models.FileData{
-			Name:      originalFileName,
+			Name:      params.OriginalFileName,
 			Size:      uint(fileInfo.Size()),
 			ReceiptId: createdReceipt.ID,
 			FileType:  validatedFileType,
@@ -357,94 +445,195 @@ func (service ReceiptService) QuickScan(
 		return models.Receipt{}, err
 	}
 
-	os.Remove(tempPath)
+	os.Remove(params.TempPath)
 	return createdReceipt, nil
 }
 
-// mergeQuickScanCategories appends the user-selected category ids to the AI-filled categories,
-// skipping any already present. Names are loaded from the ids so the result passes receipt
-// validation.
-func (service ReceiptService) mergeQuickScanCategories(
-	existing []commands.UpsertCategoryCommand,
-	categoryIds []uint,
+// combineEarlyFailureErrors keeps failureErr as the primary, inspectable cause (the reason no receipt
+// was created) while also preserving taskErr in the unwrap chain when system-task recording itself
+// failed, so errors.Is/As can reach either.
+func combineEarlyFailureErrors(failureErr, taskErr error) error {
+	if taskErr == nil {
+		return failureErr
+	}
+	return fmt.Errorf("%w (recording the failure system task also failed: %w)", failureErr, taskErr)
+}
+
+// resolveQuickScanCategories turns the AI-assigned and user-picked category ids into a validated
+// selection. The union of ids (AI-assigned first, then the user's picks, deduped) is resolved against
+// the database so each carries its real name — the AI returns ids only, which would otherwise fail
+// receipt validation. Ids that don't resolve are dropped (hallucinated / deleted), and ids the
+// triggering user isn't allowed to see are dropped too (defense-in-depth alongside the prompt's grant
+// filter). Returns an empty slice when there is nothing to resolve.
+func (service ReceiptService) resolveQuickScanCategories(
+	aiCategories []commands.UpsertCategoryCommand,
+	userCategoryIds []uint,
+	userId uint,
+	groupId uint,
 ) ([]commands.UpsertCategoryCommand, error) {
-	if len(categoryIds) == 0 {
-		return existing, nil
+	orderedIds := make([]uint, 0, len(aiCategories)+len(userCategoryIds))
+	seen := make(map[uint]bool)
+	appendId := func(id uint) {
+		if !seen[id] {
+			seen[id] = true
+			orderedIds = append(orderedIds, id)
+		}
+	}
+	for _, category := range aiCategories {
+		if category.Id != nil {
+			appendId(*category.Id)
+		}
+	}
+	for _, id := range userCategoryIds {
+		appendId(id)
+	}
+	if len(orderedIds) == 0 {
+		return []commands.UpsertCategoryCommand{}, nil
 	}
 
 	categoryRepository := repositories.NewCategoryRepository(service.TX)
-	categories, err := categoryRepository.GetByIds(categoryIds)
+	records, err := categoryRepository.GetByIds(orderedIds)
+	if err != nil {
+		return nil, err
+	}
+	recordsById := make(map[uint]models.Category, len(records))
+	for _, record := range records {
+		recordsById[record.ID] = record
+	}
+
+	allowed, unrestricted, err := service.resolveAllowedCategoryIds(userId, groupId)
 	if err != nil {
 		return nil, err
 	}
 
-	presentIds := make(map[uint]bool)
-	for _, category := range existing {
-		if category.Id != nil {
-			presentIds[*category.Id] = true
+	resolved := make([]commands.UpsertCategoryCommand, 0, len(orderedIds))
+	for _, id := range orderedIds {
+		record, ok := recordsById[id]
+		if !ok {
+			continue // id did not resolve to a real category
 		}
-	}
-
-	for _, category := range categories {
-		if presentIds[category.ID] {
-			continue
+		if !unrestricted {
+			if _, visible := allowed[id]; !visible {
+				continue // category the user is not allowed to see
+			}
 		}
 
-		id := category.ID
-		existing = append(existing, commands.UpsertCategoryCommand{
-			Id:          &id,
-			Name:        category.Name,
-			Description: category.Description,
+		recordId := record.ID
+		resolved = append(resolved, commands.UpsertCategoryCommand{
+			Id:          &recordId,
+			Name:        record.Name,
+			Description: record.Description,
 		})
-		presentIds[id] = true
 	}
 
-	return existing, nil
+	return resolved, nil
 }
 
-// mergeQuickScanTags is the tag counterpart of mergeQuickScanCategories.
-func (service ReceiptService) mergeQuickScanTags(
-	existing []commands.UpsertTagCommand,
-	tagIds []uint,
+// resolveQuickScanTags is the tag counterpart of resolveQuickScanCategories.
+func (service ReceiptService) resolveQuickScanTags(
+	aiTags []commands.UpsertTagCommand,
+	userTagIds []uint,
+	userId uint,
+	groupId uint,
 ) ([]commands.UpsertTagCommand, error) {
-	if len(tagIds) == 0 {
-		return existing, nil
+	orderedIds := make([]uint, 0, len(aiTags)+len(userTagIds))
+	seen := make(map[uint]bool)
+	appendId := func(id uint) {
+		if !seen[id] {
+			seen[id] = true
+			orderedIds = append(orderedIds, id)
+		}
+	}
+	for _, tag := range aiTags {
+		if tag.Id != nil {
+			appendId(*tag.Id)
+		}
+	}
+	for _, id := range userTagIds {
+		appendId(id)
+	}
+	if len(orderedIds) == 0 {
+		return []commands.UpsertTagCommand{}, nil
 	}
 
 	tagsRepository := repositories.NewTagsRepository(service.TX)
-	tags, err := tagsRepository.GetByIds(tagIds)
+	records, err := tagsRepository.GetByIds(orderedIds)
+	if err != nil {
+		return nil, err
+	}
+	recordsById := make(map[uint]models.Tag, len(records))
+	for _, record := range records {
+		recordsById[record.ID] = record
+	}
+
+	allowed, unrestricted, err := service.resolveAllowedTagIds(userId, groupId)
 	if err != nil {
 		return nil, err
 	}
 
-	presentIds := make(map[uint]bool)
-	for _, tag := range existing {
-		if tag.Id != nil {
-			presentIds[*tag.Id] = true
+	resolved := make([]commands.UpsertTagCommand, 0, len(orderedIds))
+	for _, id := range orderedIds {
+		record, ok := recordsById[id]
+		if !ok {
+			continue // id did not resolve to a real tag
 		}
-	}
-
-	for _, tag := range tags {
-		if presentIds[tag.ID] {
-			continue
+		if !unrestricted {
+			if _, visible := allowed[id]; !visible {
+				continue // tag the user is not allowed to see
+			}
 		}
 
-		id := tag.ID
-		existing = append(existing, commands.UpsertTagCommand{
-			Id:          &id,
-			Name:        tag.Name,
-			Description: tag.Description,
+		recordId := record.ID
+		resolved = append(resolved, commands.UpsertTagCommand{
+			Id:          &recordId,
+			Name:        record.Name,
+			Description: record.Description,
 		})
-		presentIds[id] = true
 	}
 
-	return existing, nil
+	return resolved, nil
 }
 
+// resolveAllowedCategoryIds returns the set of category ids the triggering user may see in the group,
+// or unrestricted=true (see-all) when the user bypasses grants (holds app.categories.read) or their
+// group role grants nothing for categories. The returned set is shared grant-cache state and must
+// only be read.
+func (service ReceiptService) resolveAllowedCategoryIds(userId uint, groupId uint) (map[uint]struct{}, bool, error) {
+	permissionService := NewPermissionService(service.TX)
+	bypass, err := permissionService.userBypassesGrants(userId, permissions.AppCategoriesRead)
+	if err != nil {
+		return nil, false, err
+	}
+	if bypass {
+		return nil, true, nil
+	}
+	return permissionService.GetGroupCategoryIdsForUser(userId, groupId)
+}
+
+// resolveAllowedTagIds is the tag counterpart of resolveAllowedCategoryIds.
+func (service ReceiptService) resolveAllowedTagIds(userId uint, groupId uint) (map[uint]struct{}, bool, error) {
+	permissionService := NewPermissionService(service.TX)
+	bypass, err := permissionService.userBypassesGrants(userId, permissions.AppTagsRead)
+	if err != nil {
+		return nil, false, err
+	}
+	if bypass {
+		return nil, true, nil
+	}
+	return permissionService.GetGroupTagIdsForUser(userId, groupId)
+}
+
+// DuplicateReceipt copies a receipt, its items, comments and images, all or
+// nothing: the new receipt and its image files are created together or not at
+// all, and the RECEIPT_UPLOADED task records which.
+//
+// err is a named result so the deferred task always records the error actually
+// returned. It used to read a local err that the image loop shadowed, so a
+// failed copy was recorded as SUCCEEDED.
 func (service ReceiptService) DuplicateReceipt(
 	userId uint,
 	receiptId string,
-) (models.Receipt, error) {
+) (_ models.Receipt, err error) {
 	db := repositories.GetDB()
 	newReceipt := models.Receipt{}
 
@@ -477,6 +666,13 @@ func (service ReceiptService) DuplicateReceipt(
 	// copied onto the new receipt.
 	permissionService := NewPermissionService(nil)
 	err = permissionService.FilterReceiptCategoriesTagsForReceipt(userId, &receipt)
+	if err != nil {
+		return models.Receipt{}, err
+	}
+
+	// Mask user references outside the caller's member-visible set (e.g. an item
+	// charged to a non-visible user) so they are not carried onto the copy.
+	err = permissionService.MaskReceiptForMemberVisibility(userId, &receipt)
 	if err != nil {
 		return models.Receipt{}, err
 	}
@@ -525,43 +721,184 @@ func (service ReceiptService) DuplicateReceipt(
 		newReceipt.Comments = append(newReceipt.Comments, newComment)
 	}
 
-	err = db.Create(&newReceipt).Error
+	var resultString string
+	var copiedPaths []string
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&newReceipt).Error; err != nil {
+			return err
+		}
+
+		description, err := newReceipt.ToString()
+		if err != nil {
+			return err
+		}
+		resultString = description
+
+		copiedPaths, err = copyDuplicateImages(tx, receipt.ImageFiles, newReceipt.ImageFiles)
+		return err
+	})
 	if err != nil {
+		// Keyed on the transaction's error rather than the copy's, so a failed
+		// commit is covered too: either way the rows are gone, and so must be the
+		// files they would have referenced.
+		for _, path := range copiedPaths {
+			if removeErr := utils.RemoveDataPath(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				logging.LogStd(logging.LOG_LEVEL_ERROR, "Failed to remove an image copied for a failed duplicate: "+removeErr.Error())
+			}
+		}
 		return models.Receipt{}, err
 	}
+
+	// Only once committed, so a failed duplicate's task never links to a receipt
+	// that was rolled back.
 	systemTaskCommand.AssociatedEntityId = newReceipt.ID
 	systemTaskCommand.ReceiptId = &newReceipt.ID
+	systemTaskCommand.ResultDescription = resultString
 
-	resultString, err := newReceipt.ToString()
+	return newReceipt, nil
+}
+
+// copyDuplicateImages writes each source image's stored bytes, unconverted, to
+// the path of its counterpart on the duplicate, so the copy is byte-identical
+// (a PDF stays a PDF). It runs on the transaction that created the duplicate,
+// because BuildFilePath looks the new receipt's group up and the row is not
+// visible outside it yet.
+//
+// It returns every path it wrote or tried to write, on success and on failure
+// alike, so the caller can remove them if the transaction does not commit.
+func copyDuplicateImages(tx *gorm.DB, sources []models.FileData, copies []models.FileData) ([]string, error) {
+	fileRepository := repositories.NewFileRepository(tx)
+	written := make([]string, 0, len(copies))
+
+	for i, copied := range copies {
+		source := sources[i]
+		sourcePath, err := fileRepository.BuildFilePath(
+			utils.UintToString(source.ReceiptId),
+			utils.UintToString(source.ID),
+			source.Name,
+		)
+		if err != nil {
+			return written, err
+		}
+
+		imageBytes, err := utils.ReadDataFile(sourcePath)
+		if err != nil {
+			return written, err
+		}
+
+		copyPath, err := fileRepository.BuildFilePath(
+			utils.UintToString(copied.ReceiptId),
+			utils.UintToString(copied.ID),
+			copied.Name,
+		)
+		if err != nil {
+			return written, err
+		}
+
+		// Tracked before writing: a write that fails partway can still leave a
+		// created or truncated file behind.
+		written = append(written, copyPath)
+		if err := utils.WriteDataFile(copyPath, imageBytes); err != nil {
+			return written, err
+		}
+	}
+
+	return written, nil
+}
+
+// CreateReceiptWithFiles creates a receipt and every uploaded image in ONE
+// transaction, so a create either lands whole or leaves nothing behind — no
+// receipt, no FileData, no file on disk. The files must already have passed
+// ValidateFileType; the caller checks them before anything is written.
+//
+// Files are written to disk inside the transaction (BuildFilePath resolves the
+// receipt's group, and the row is only visible there), so every path written is
+// tracked and removed if the transaction does not commit — the same approach as
+// DuplicateReceipt. The RECEIPT_UPLOADED task is recorded once the outcome is
+// known, like DuplicateReceipt's, rather than by CreateReceipt, whose own task
+// write would run outside this transaction.
+func (service ReceiptService) CreateReceiptWithFiles(
+	command commands.UpsertReceiptCommand,
+	files []commands.ReceiptFileUpload,
+	userId uint,
+) (_ models.Receipt, err error) {
+	db := service.GetDB()
+
+	systemTaskCommand := commands.UpsertSystemTaskCommand{
+		Type:                 models.RECEIPT_UPLOADED,
+		Status:               models.SYSTEM_TASK_SUCCEEDED,
+		AssociatedEntityType: models.RECEIPT,
+		StartedAt:            time.Now(),
+		RanByUserId:          &userId,
+		GroupId:              &command.GroupId,
+	}
+	defer func() {
+		_, taskErr := NewSystemTaskService(nil).CreateSystemTaskFromError(systemTaskCommand, err)
+		if taskErr != nil {
+			logging.LogStd(logging.LOG_LEVEL_ERROR, "Failed to record the receipt upload task: "+taskErr.Error())
+		}
+	}()
+
+	var createdReceiptId uint
+	writtenPaths := make([]string, 0, len(files))
+	err = db.Transaction(func(tx *gorm.DB) error {
+		createdReceipt, txErr := repositories.NewReceiptRepository(tx).CreateReceipt(command, userId, false)
+		if txErr != nil {
+			return txErr
+		}
+		createdReceiptId = createdReceipt.ID
+
+		receiptImageRepository := repositories.NewReceiptImageRepository(tx)
+		fileRepository := repositories.NewFileRepository(tx)
+		for _, file := range files {
+			fileData := models.FileData{
+				Name:      file.Name,
+				Size:      uint(len(file.Bytes)),
+				ReceiptId: createdReceiptId,
+			}
+
+			createdFile, imageErr := receiptImageRepository.CreateReceiptImage(fileData, file.Bytes)
+			// A row id comes back even when the write itself failed, so a partially
+			// written file is tracked too.
+			if createdFile.ID != 0 {
+				path, pathErr := fileRepository.BuildFilePath(
+					utils.UintToString(createdReceiptId),
+					utils.UintToString(createdFile.ID),
+					createdFile.Name,
+				)
+				if pathErr != nil {
+					return pathErr
+				}
+				writtenPaths = append(writtenPaths, path)
+			}
+			if imageErr != nil {
+				return imageErr
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		for _, path := range writtenPaths {
+			if removeErr := utils.RemoveDataPath(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				logging.LogStd(logging.LOG_LEVEL_ERROR, "Failed to remove an image written for a failed receipt create: "+removeErr.Error())
+			}
+		}
+		return models.Receipt{}, err
+	}
+
+	receipt, err := repositories.NewReceiptRepository(nil).GetFullyLoadedReceiptById(utils.UintToString(createdReceiptId))
 	if err != nil {
 		return models.Receipt{}, err
 	}
 
-	systemTaskCommand.ResultDescription = resultString
-
-	// Copy receipt images
-	fileRepository := repositories.NewFileRepository(nil)
-	for i, fileData := range newReceipt.ImageFiles {
-		srcFileData := receipt.ImageFiles[i]
-		srcImageBytes, err := fileRepository.GetBytesForFileData(srcFileData)
-		if err != nil {
-			return models.Receipt{}, err
-		}
-
-		dstPath, err := fileRepository.BuildFilePath(
-			utils.UintToString(newReceipt.ID),
-			utils.UintToString(fileData.ID),
-			fileData.Name,
-		)
-		if err != nil {
-			return models.Receipt{}, err
-		}
-
-		err = utils.WriteDataFile(dstPath, srcImageBytes)
-		if err != nil {
-			return models.Receipt{}, err
-		}
+	resultDescription, err := receipt.ToString()
+	if err != nil {
+		return models.Receipt{}, err
 	}
+	systemTaskCommand.AssociatedEntityId = receipt.ID
+	systemTaskCommand.ReceiptId = &receipt.ID
+	systemTaskCommand.ResultDescription = resultDescription
 
-	return newReceipt, nil
+	return receipt, nil
 }

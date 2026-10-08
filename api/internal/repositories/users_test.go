@@ -149,7 +149,7 @@ func TestCreateUserHonorsExplicitAppRole(t *testing.T) {
 	}
 
 	// A custom (non-system) app role is honored as-is on the modern FK.
-	custom, err := roleRepository.CreateAppRole("Auditor", "", []string{permissions.AppUsersRead})
+	custom, err := roleRepository.CreateAppRole("Auditor", "", []string{permissions.AppUsersRead}, false)
 	if err != nil {
 		utils.PrintTestError(t, err, nil)
 		return
@@ -164,6 +164,153 @@ func TestCreateUserHonorsExplicitAppRole(t *testing.T) {
 	}
 	if auditor.AppRoleID == nil || *auditor.AppRoleID != custom.ID {
 		utils.PrintTestError(t, auditor.AppRoleID, custom.ID)
+	}
+}
+
+// groupNamesForUser returns the names of every group the user is a member of.
+func groupNamesForUser(t *testing.T, userId uint) []string {
+	var groups []models.Group
+	err := GetDB().Model(&models.Group{}).
+		Joins("JOIN group_members ON group_members.group_id = groups.id").
+		Where("group_members.user_id = ?", userId).
+		Find(&groups).Error
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return nil
+	}
+
+	names := make([]string, 0, len(groups))
+	for _, group := range groups {
+		names = append(names, group.Name)
+	}
+
+	return names
+}
+
+func TestCreateUserSkipsDefaultGroupForFlaggedAppRole(t *testing.T) {
+	defer TruncateTestDb()
+
+	if err := SeedSystemRoles(); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	if err := EnsureDefaultRoles(); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	userRepository := NewUserRepository(nil)
+	roleRepository := NewRoleRepository(nil)
+
+	// Occupy the first-user slot so the accounts below take their explicit role
+	// rather than the bootstrap Legacy Admin.
+	if _, err := userRepository.CreateUser(commands.SignUpCommand{
+		Username: "bootstrap", DisplayName: "b", Password: "a really secure password",
+	}); err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	skipRole, err := roleRepository.CreateAppRole("Shared Groups Only", "", []string{permissions.AppUsersRead}, true)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	restricted, err := userRepository.CreateUser(commands.SignUpCommand{
+		Username: "restricted", DisplayName: "r", Password: "a really secure password",
+		AppRoleID: &skipRole.ID,
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	// The personal group is skipped, but the virtual "All" group is always created
+	// so the account still has a working dashboard.
+	names := groupNamesForUser(t, restricted.ID)
+	if len(names) != 1 || names[0] != "All" {
+		utils.PrintTestError(t, names, []string{"All"})
+	}
+}
+
+// The two best-effort branches of the helper, which the CreateUser tests below
+// can't reach: a user with no app role at all, and an id with no matching row.
+// Both must report "don't skip" rather than erroring, so user creation proceeds
+// with the personal group instead of failing. (A non-record-not-found lookup
+// error deliberately propagates instead — that path needs DB error injection,
+// which this package has no mechanism for. The OnDelete:RESTRICT FK on
+// User.AppRoleID rules out dangling role ids, not connection, transaction, or
+// context errors.)
+func TestAppRoleSkipsDefaultGroupBestEffortBranches(t *testing.T) {
+	defer TruncateTestDb()
+	userRepository := NewUserRepository(nil)
+
+	skip, err := userRepository.appRoleSkipsDefaultGroup(nil, nil)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+	}
+	if skip {
+		utils.PrintTestError(t, skip, false)
+	}
+
+	missingId := uint(999999)
+	skip, err = userRepository.appRoleSkipsDefaultGroup(nil, &missingId)
+	if err != nil {
+		utils.PrintTestError(t, err, nil)
+	}
+	if skip {
+		utils.PrintTestError(t, skip, false)
+	}
+}
+
+func TestCreateUserCreatesDefaultGroupForUnflaggedAppRole(t *testing.T) {
+	defer TruncateTestDb()
+
+	if err := SeedSystemRoles(); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+	if err := EnsureDefaultRoles(); err != nil {
+		utils.PrintTestError(t, err, nil)
+		return
+	}
+
+	userRepository := NewUserRepository(nil)
+
+	if _, err := userRepository.CreateUser(commands.SignUpCommand{
+		Username: "bootstrap", DisplayName: "b", Password: "a really secure password",
+	}); err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	// The default app role is unflagged, so the personal group is still created.
+	normal, err := userRepository.CreateUser(commands.SignUpCommand{
+		Username: "normal", DisplayName: "n", Password: "a really secure password",
+	})
+	if err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	names := groupNamesForUser(t, normal.ID)
+	if len(names) != 2 {
+		utils.PrintTestError(t, names, []string{"My Receipts", "All"})
+		return
+	}
+
+	var hasPersonal, hasAll bool
+	for _, name := range names {
+		if name == "My Receipts" {
+			hasPersonal = true
+		}
+		if name == "All" {
+			hasAll = true
+		}
+	}
+	if !hasPersonal || !hasAll {
+		utils.PrintTestError(t, names, []string{"My Receipts", "All"})
 	}
 }
 
@@ -423,4 +570,129 @@ func validateGroup(t *testing.T, group models.Group, id uint, userId uint) {
 		utils.PrintTestError(t, group.Name, "My Receipts")
 	}
 
+}
+
+func pagedUsersCommand(orderBy string, direction commands.SortDirection) commands.PagedRequestCommand {
+	return commands.PagedRequestCommand{
+		Page:          1,
+		PageSize:      10,
+		OrderBy:       orderBy,
+		SortDirection: direction,
+	}
+}
+
+func createUserWithUsername(username string) {
+	GetDB().Create(&models.User{
+		Username:    username,
+		DisplayName: username,
+		Password:    "Password",
+	})
+}
+
+func TestGetPagedUsers_ReturnsRowsAndCount(t *testing.T) {
+	defer TruncateTestDb()
+
+	createUserWithUsername("beta")
+	createUserWithUsername("alpha")
+
+	repository := NewUserRepository(nil)
+	users, count, err := repository.GetPagedUsers(pagedUsersCommand("username", commands.ASCENDING))
+	if err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	if count != 2 {
+		utils.PrintTestError(t, count, int64(2))
+	}
+	if len(users) != 2 {
+		utils.PrintTestError(t, len(users), 2)
+		return
+	}
+	// Ascending username order.
+	if users[0].Username != "alpha" || users[1].Username != "beta" {
+		utils.PrintTestError(t, []string{users[0].Username, users[1].Username}, []string{"alpha", "beta"})
+	}
+}
+
+func TestGetPagedUsers_SecondPage(t *testing.T) {
+	defer TruncateTestDb()
+
+	createUserWithUsername("a")
+	createUserWithUsername("b")
+	createUserWithUsername("c")
+
+	command := pagedUsersCommand("username", commands.ASCENDING)
+	command.Page = 2
+	command.PageSize = 2
+
+	users, count, err := NewUserRepository(nil).GetPagedUsers(command)
+	if err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+
+	// Count is the unpaged total.
+	if count != 3 {
+		utils.PrintTestError(t, count, int64(3))
+	}
+	if len(users) != 1 {
+		utils.PrintTestError(t, len(users), 1)
+		return
+	}
+	if users[0].Username != "c" {
+		utils.PrintTestError(t, users[0].Username, "c")
+	}
+}
+
+func TestGetPagedUsers_EmptyReturnsZeroCount(t *testing.T) {
+	defer TruncateTestDb()
+
+	users, count, err := NewUserRepository(nil).GetPagedUsers(pagedUsersCommand("username", commands.ASCENDING))
+	if err != nil {
+		utils.PrintTestError(t, err, "no error")
+		return
+	}
+	if count != 0 {
+		utils.PrintTestError(t, count, int64(0))
+	}
+	if len(users) != 0 {
+		utils.PrintTestError(t, len(users), 0)
+	}
+}
+
+func TestGetPagedUsers_RejectsInvalidColumn(t *testing.T) {
+	defer TruncateTestDb()
+
+	// An order-by outside the allow-list is rejected rather than interpolated as raw SQL.
+	_, _, err := NewUserRepository(nil).GetPagedUsers(pagedUsersCommand("password", commands.ASCENDING))
+	if err == nil {
+		utils.PrintTestError(t, nil, "an invalid column error")
+	}
+}
+
+func TestGetPagedUsers_SortsByAllowedColumns(t *testing.T) {
+	defer TruncateTestDb()
+
+	createUserWithUsername("alpha")
+	createUserWithUsername("beta")
+
+	repository := NewUserRepository(nil)
+
+	// username is covered above; display_name, created_at and updated_at must also
+	// execute through Sort/Find without error (they are on the allow-list but were
+	// never exercised).
+	for _, column := range []string{"display_name", "created_at", "updated_at"} {
+		users, count, err := repository.GetPagedUsers(pagedUsersCommand(column, commands.DESCENDING))
+		if err != nil {
+			utils.PrintTestError(t, err, "no error sorting by "+column)
+			return
+		}
+		if count != 2 {
+			utils.PrintTestError(t, count, int64(2))
+		}
+		if len(users) != 2 {
+			utils.PrintTestError(t, len(users), 2)
+		}
+	}
 }

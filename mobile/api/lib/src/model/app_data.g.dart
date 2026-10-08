@@ -40,9 +40,11 @@ class _$AppData extends AppData {
   @override
   final BuiltList<Icon> icons;
   @override
-  final BuiltList<Permission> appPermissions;
+  final BuiltList<String> appPermissions;
   @override
-  final BuiltMap<String, BuiltList<Permission>> groupPermissions;
+  final BuiltMap<String, BuiltList<String>> groupPermissions;
+  @override
+  final BuiltMap<String, ReceiptRequirements>? groupReceiptRequirements;
   @override
   final BuiltMap<String, BuiltList<Category>>? groupCategories;
   @override
@@ -70,6 +72,7 @@ class _$AppData extends AppData {
       required this.icons,
       required this.appPermissions,
       required this.groupPermissions,
+      this.groupReceiptRequirements,
       this.groupCategories,
       this.groupTags})
       : super._();
@@ -102,6 +105,7 @@ class _$AppData extends AppData {
         icons == other.icons &&
         appPermissions == other.appPermissions &&
         groupPermissions == other.groupPermissions &&
+        groupReceiptRequirements == other.groupReceiptRequirements &&
         groupCategories == other.groupCategories &&
         groupTags == other.groupTags;
   }
@@ -127,6 +131,7 @@ class _$AppData extends AppData {
     _$hash = $jc(_$hash, icons.hashCode);
     _$hash = $jc(_$hash, appPermissions.hashCode);
     _$hash = $jc(_$hash, groupPermissions.hashCode);
+    _$hash = $jc(_$hash, groupReceiptRequirements.hashCode);
     _$hash = $jc(_$hash, groupCategories.hashCode);
     _$hash = $jc(_$hash, groupTags.hashCode);
     _$hash = $jf(_$hash);
@@ -154,6 +159,7 @@ class _$AppData extends AppData {
           ..add('icons', icons)
           ..add('appPermissions', appPermissions)
           ..add('groupPermissions', groupPermissions)
+          ..add('groupReceiptRequirements', groupReceiptRequirements)
           ..add('groupCategories', groupCategories)
           ..add('groupTags', groupTags))
         .toString();
@@ -242,18 +248,26 @@ class AppDataBuilder implements Builder<AppData, AppDataBuilder> {
   ListBuilder<Icon> get icons => _$this._icons ??= ListBuilder<Icon>();
   set icons(ListBuilder<Icon>? icons) => _$this._icons = icons;
 
-  ListBuilder<Permission>? _appPermissions;
-  ListBuilder<Permission> get appPermissions =>
-      _$this._appPermissions ??= ListBuilder<Permission>();
-  set appPermissions(ListBuilder<Permission>? appPermissions) =>
+  ListBuilder<String>? _appPermissions;
+  ListBuilder<String> get appPermissions =>
+      _$this._appPermissions ??= ListBuilder<String>();
+  set appPermissions(ListBuilder<String>? appPermissions) =>
       _$this._appPermissions = appPermissions;
 
-  MapBuilder<String, BuiltList<Permission>>? _groupPermissions;
-  MapBuilder<String, BuiltList<Permission>> get groupPermissions =>
-      _$this._groupPermissions ??= MapBuilder<String, BuiltList<Permission>>();
+  MapBuilder<String, BuiltList<String>>? _groupPermissions;
+  MapBuilder<String, BuiltList<String>> get groupPermissions =>
+      _$this._groupPermissions ??= MapBuilder<String, BuiltList<String>>();
   set groupPermissions(
-          MapBuilder<String, BuiltList<Permission>>? groupPermissions) =>
+          MapBuilder<String, BuiltList<String>>? groupPermissions) =>
       _$this._groupPermissions = groupPermissions;
+
+  MapBuilder<String, ReceiptRequirements>? _groupReceiptRequirements;
+  MapBuilder<String, ReceiptRequirements> get groupReceiptRequirements =>
+      _$this._groupReceiptRequirements ??=
+          MapBuilder<String, ReceiptRequirements>();
+  set groupReceiptRequirements(
+          MapBuilder<String, ReceiptRequirements>? groupReceiptRequirements) =>
+      _$this._groupReceiptRequirements = groupReceiptRequirements;
 
   MapBuilder<String, BuiltList<Category>>? _groupCategories;
   MapBuilder<String, BuiltList<Category>> get groupCategories =>
@@ -293,6 +307,7 @@ class AppDataBuilder implements Builder<AppData, AppDataBuilder> {
       _icons = $v.icons.toBuilder();
       _appPermissions = $v.appPermissions.toBuilder();
       _groupPermissions = $v.groupPermissions.toBuilder();
+      _groupReceiptRequirements = $v.groupReceiptRequirements?.toBuilder();
       _groupCategories = $v.groupCategories?.toBuilder();
       _groupTags = $v.groupTags?.toBuilder();
       _$v = null;
@@ -337,6 +352,7 @@ class AppDataBuilder implements Builder<AppData, AppDataBuilder> {
             icons: icons.build(),
             appPermissions: appPermissions.build(),
             groupPermissions: groupPermissions.build(),
+            groupReceiptRequirements: _groupReceiptRequirements?.build(),
             groupCategories: _groupCategories?.build(),
             groupTags: _groupTags?.build(),
           );
@@ -366,6 +382,8 @@ class AppDataBuilder implements Builder<AppData, AppDataBuilder> {
         appPermissions.build();
         _$failedField = 'groupPermissions';
         groupPermissions.build();
+        _$failedField = 'groupReceiptRequirements';
+        _groupReceiptRequirements?.build();
         _$failedField = 'groupCategories';
         _groupCategories?.build();
         _$failedField = 'groupTags';

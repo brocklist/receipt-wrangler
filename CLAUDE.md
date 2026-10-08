@@ -29,12 +29,18 @@ Each component has its own CLAUDE.md with detailed component-specific guidance. 
   from the generated MCP TypeScript client above.
 
 ### Technology Stack
-- **Backend**: Go 1.25 with Chi router, GORM ORM, Asynq background jobs
+- **Backend**: Go 1.26 with Chi router, GORM ORM, Asynq background jobs
 - **Frontend**: Angular 19 with NGXS state management, Material + Bootstrap UI
 - **Mobile**: Flutter with Provider state management, go_router navigation
 - **Infrastructure**: Docker, nginx, PostgreSQL/MySQL/SQLite
 
 ## Docker Deployment
+
+**All Docker build config lives in `docker/` — nothing else.** Those two Dockerfiles are what CI
+builds images from (`.github/workflows/ci.yml` and `release.yml` both pass `file: ./docker/Dockerfile`
+with `context: .`). Per-component `api/Dockerfile` and `desktop/Dockerfile` used to exist and were
+removed as dead config; do not add them back. Because the build context is the repo root, a
+`.dockerignore` is only ever consulted at the repo root too.
 
 ### Production Build (Monolith)
 The `docker/Dockerfile` builds a single container with both API and web interface:
@@ -71,6 +77,88 @@ When the API swagger.yml changes, regenerate clients:
 ```
 
 **IMPORTANT**: Never manually edit generated client code in `desktop/src/open-api/` or `mobile/api/`. Changes will be overwritten.
+
+**Drift runs the other way too — the spec can fall behind the server.** `swagger.yml`'s `QueueName`
+enum listed four of the Go side's five names (`system_clean_up` was missing) while
+`UpsertSystemSettingsCommand.Validate` had always required a configuration for all five; the System
+Settings form only worked because it builds its FormArray from the server's settings rather than from
+the enum. Fixed when that queue took on the temp-file sweep. When you add a value to a Go enum the API
+serializes, add it to `swagger.yml` in the same change — and note this direction is the *safe* one to
+fix, since a client learning a value the server already sends can only stop failing on it.
+
+**The same property cut the other way in the DATABASE.** Sourcing the FormArray from the server's
+settings is what let the form survive a stale enum — and it is exactly what broke on an install whose
+persisted `task_queue_configurations` predated the new queue: the server returned four rows, the form
+submitted four, and `Validate` rejected the whole save with a 400. So a new queue name needs a
+backfill on the *stored* side too, not just the spec. Both halves now live in
+`repositories/system_settings.go`; see `api/CLAUDE.md` → "Temporary file retention & cleanup" →
+"Upgrade path".
+
+**Regenerate `mobile/api/` in the SAME change as any `swagger.yml` edit** — not "later". It is easy
+to update the backend and desktop and forget mobile, because nothing fails: the Go tests pass, the
+desktop compiles, and the drift is invisible until a released Android build hits the new payload.
+That has caused **two production login outages** (2026-07-24, 2026-08-06). The Dart client is the
+strict one — a value added to any closed enum on a response model fails the *whole* payload's
+deserialization on every already-released binary. See `mobile/CLAUDE.md` → "Permission-based UI
+gating" for the mechanism and the guard tests.
+
+To check for drift at any time, compare *when* each was last touched — commit timestamps, since two
+short hashes tell you nothing about ordering:
+
+```bash
+swagger=$(git log -1 --format=%ct -- api/swagger.yml)
+client=$(git log -1 --format=%ct -- mobile/api)
+[ "$swagger" -le "$client" ] && echo "mobile/api is current" || echo "mobile/api is STALE — regenerate"
+```
+
+**Generator on macOS:** `generate-client.sh` shells out to `npx @openapitools/openapi-generator-cli`,
+which fails with `EACCES` when the global npm prefix is root-owned. Run the pinned jar directly
+instead (version is in `api/openapitools.json`), which produces identical output:
+
+```bash
+curl -fL -o /tmp/openapi-generator-cli-7.10.0.jar \
+  https://repo1.maven.org/maven2/org/openapitools/openapi-generator-cli/7.10.0/openapi-generator-cli-7.10.0.jar
+cd api
+java -jar /tmp/openapi-generator-cli-7.10.0.jar generate -i swagger.yml -g dart-dio -o ../mobile/api
+java -jar /tmp/openapi-generator-cli-7.10.0.jar generate -i swagger.yml -g typescript-angular -o ../desktop/src/open-api
+cd ../mobile/api && flutter pub get && dart run build_runner build
+```
+
+`generate-client.sh` re-applies the four documented dart-dio patches itself, as the last step of a
+`mobile` regen (`api/patches/apply-dart-dio-patches.sh`); it **fails the regen** rather than
+returning an unpatched client if one no longer applies. Invoking the jar directly, as above, skips
+that step — run the patch script by hand afterwards. Either way run `flutter analyze` **and
+`flutter test`**: two of the four compile fine when missing (see `mobile/CLAUDE.md` → "Known
+dart-dio regressions").
+
+**Mobile regen without Flutter (e.g. the Claude Code web sandbox):** `mobile/api/pubspec.yaml` has
+**no Flutter dependency**, so the standalone **Dart SDK** is enough to finish the regen — Flutter is
+only needed for the app itself. Point `DART_SDK` at the copy inside an existing Flutter install, or
+at a standalone SDK unpacked from the dart-archive, and confirm the version before generating
+anything:
+
+```bash
+DART_SDK=/opt/flutter/bin/cache/dart-sdk   # Flutter's own Dart; or an unpacked dart-archive SDK
+export PATH="$DART_SDK/bin:$PATH"
+dart --version                             # confirm before regenerating (verified with 3.12.2)
+cd mobile/api && dart pub get && dart run build_runner build && dart analyze
+```
+
+**Use the Dart SDK that ships inside the pinned Flutter** (`3.41.7` — `.github/workflows/ci.yml`,
+`docker/dev/Dockerfile` `FLUTTER_VERSION`); a mismatched SDK is the main thing that widens the diff.
+Under Dart 3.12.2 `dart run build_runner build` reproduced the committed `.g.dart` files exactly, so
+the diff stayed limited to the actual swagger change — but that is **not** guaranteed across
+versions: the package declares `build_runner: any` and its `pubspec.lock` is gitignored, so a
+different resolution can reformat unrelated files. The pin can't be added to
+`mobile/api/pubspec.yaml` either — that file is generator output (see `.openapi-generator/FILES`) and
+is overwritten on the next regen. So **always read the diff and revert churn unrelated to the swagger
+change**.
+
+`dart analyze` substitutes for `flutter analyze` here (it reports the same errors) and stays scoped to
+`mobile/api` — judge a regen by the **error** count, which must be **0**. The warnings are
+pre-existing generator noise: 73 in `mobile/api` of 106 across `mobile/`, the split recorded in
+`.github/workflows/ci.yml` where the analyzer is deliberately not gated. Keep those two numbers in
+sync with that comment.
 
 ## Component Development
 
@@ -117,7 +205,7 @@ them instead of rediscovering:
 - **Frontend:** `desktop/CLAUDE.md` → "Running in the Claude Code Web/Cloud Sandbox"
 
 **Root cause of the friction:** the sandbox base image is **Ubuntu 24.04 (Noble)**, whereas the
-project's Docker images / setup scripts assume **Debian** (`golang:1.25-trixie`, `bullseye`). The big
+project's Docker images / setup scripts assume **Debian** (`golang:1.26-trixie`, `bullseye`). The big
 one is ImageMagick: the Go API's `imagick.v3` CGO binding needs **ImageMagick 7**, but Ubuntu only
 ships ImageMagick **6** and has no IM7 package — so `set-up-dependencies.sh` can't provide it and IM7
 has to be **built from source**. Redis is installed but not started, and Tesseract/ImageMagick native
@@ -148,6 +236,13 @@ dev libs must be installed by hand.
 - Desktop stores tokens via NGXS persistent storage
 - Mobile uses `flutter_secure_storage` for secure token storage
 - All API endpoints except `/api/auth/login` and `/api/auth/signup` require authentication
+- **The refresh-token lifetime is a System Setting** (`refreshTokenValidForHours`, plus a separate
+  `mcpRefreshTokenValidForHours` for connector tokens) so each install can pick its own security
+  posture. Because refresh tokens rotate on every use, it is an **inactivity timeout, not an
+  absolute session cap**. The **access token is deliberately fixed at 20 minutes** — both clients
+  size their 15-minute proactive refresh timer against it, and neither client needed any change for
+  this. See `api/CLAUDE.md` → "Session lifetime" and `desktop/CLAUDE.md` → "Session lifetime
+  settings".
 
 ### Authorization (Roles & Permissions)
 - A configurable role system layers on top of auth: administrators define **app-level** and
@@ -167,6 +262,256 @@ dev libs must be installed by hand.
   group-form "must have an owner" rule is gone (the backend no longer enforces an owner concept), and
   the `AuthState.userRole`/`hasRole` selectors plus the group-member legacy-enum bridge are removed.
   See `api/CLAUDE.md` → "Roles & Permissions" and `desktop/CLAUDE.md`.
+
+### Group Default Custom Fields
+
+A group can declare custom fields that are **always pre-added** to its receipts, configured on
+**Group Receipt Settings**. This is a three-component feature; the pieces have to agree:
+
+- **Backend** owns the config and the cleanup — `GroupReceiptSettings.defaultCustomFieldIds` (a
+  `gorm:"-"` projection hydrated by an explicit batched loader, never a GORM hook) plus
+  `applyDefaultCustomFieldsOnIngest`, which attaches the set to receipts the **server** creates
+  (quick scan, email). Deleting a custom field removes it from every group's set. See
+  `api/CLAUDE.md` → "Group Default Custom Fields".
+- **Both clients apply the set on the receipt form**, on load in **every** mode — create, edit and
+  read-only view — and whenever the group changes, with the same "smart swap" rule: an auto-added
+  field that is still **empty** is dropped when you switch away, anything you typed into or added by
+  hand is kept, and the new group's missing defaults are added. A field the user adds or removes by
+  hand stops being auto-managed. See `desktop/CLAUDE.md` → "Per-group default custom fields" and
+  `mobile/CLAUDE.md` → "Group default custom fields".
+  - **Applying on load is what makes a default read as a built-in field.** A receipt saved before the
+    group was configured shows the field too: blank and read-only in view, editable in edit. Two
+    consequences worth knowing. **Saving an edited receipt persists the defaults as empty attached
+    values** — an empty value is meaningful, it records that the field belongs on the receipt, and
+    both clients already submit one per attached field because the backend replaces the whole
+    association on update. And **a default applied on load stays auto-managed**, so changing the
+    group on that form drops it again while it is still empty.
+  - **Each client tracks that "the form added this, the user didn't" differently**, because their
+    form lifecycles differ. Desktop re-derives it every `initForm()`, which rebuilds the custom-field
+    `FormArray` from the saved receipt, so an unsaved manual edit never survives a navigation.
+    Mobile's `ReceiptModel` *does* outlive its screen, so the provenance set lives on the model
+    (`ReceiptModel.autoAppliedCustomFieldIds`) — see `mobile/CLAUDE.md`. Inferring it from the saved
+    receipt instead reclaims a field the user removed and re-added by hand, and then drops it.
+- **Both clients gate on `app.custom-fields.read`.** The server's
+  `enforceReceiptCustomFieldSelection` **403s** any save that changes the set of attached custom
+  field ids for a caller without it, so auto-adding fields for such a user would make their receipts
+  unsaveable. Desktop checks the permission directly; mobile self-gates because its catalog fetch
+  403s into an empty list. The seeded Legacy User role holds the permission, so default installs are
+  unaffected — but this is why the feature is a no-op for a hand-built role that drops it.
+- **An empty set must serialize as `[]`, never `null`** — the generated Dart deserializer has no null
+  guard, so a null would fail the whole AppData payload on already-released Android builds.
+- **The command fields are pointers** (`*[]uint` / `*bool`): omitting a key leaves the stored value
+  alone. A client that hides the section must omit them rather than send zero values, or it wipes
+  another admin's configuration.
+- **Each client has its own e2e for the group switch**, because the unit/widget tests on both sides
+  inject group settings into a mocked store and so prove nothing about the wire:
+  `desktop/e2e/group-default-custom-fields.spec.ts` and
+  `mobile/integration_test/receipt_default_custom_fields_test.dart`.
+
+### Receipt Summary
+
+A block of totals under the receipts table, covering the **whole current filter result set** rather
+than the visible page: a receipt count and amount total overall, then the same figures per
+configured status, plus a column per configured CURRENCY custom field. **All three components.**
+It shipped backend + desktop first, while mobile had no filter to describe; mobile gained one (see
+`mobile/CLAUDE.md` → "Receipt filtering") and the block followed.
+
+- **Configuration is per-group and applies to everyone**, on Group Receipt Settings: a master
+  toggle, which statuses break out, which currency fields are totalled, and **where the block
+  renders** (top or bottom). Stored in two join tables plus two plain columns (deliberately not a
+  discriminator on the existing defaults join — see `api/CLAUDE.md`).
+- **The server owns the configuration, not the client.** `ReceiptSummaryCommand` carries the filter
+  and an optional `configurationGroupId`, never the field or status list, so a client cannot add a
+  column or opt out of one. A real group may omit `configurationGroupId` or send **its own** id —
+  which is what the desktop does — but naming a **different** group's is a 400. Borrowing another
+  group's configuration is the synthetic All group's privilege alone, since it has none of its own;
+  allowing it anywhere else would be a way around the very invariant this bullet states.
+- **`POST /api/receipt/group/{groupId}/summary` is gated on `group.receipts.read`** — the same
+  permission as the table it sits under, and deliberately not `app.custom-fields.read`: that gates
+  the catalog, and any receipt reader already sees these field names.
+- **Aggregated in Go with `shopspring/decimal`, never a SQL `SUM`.** SQLite has no decimal type, so
+  `SUM` over a `decimal(10,2)` returns a float there and an exact decimal on Postgres/MySQL — the
+  same endpoint would report different cents on the three supported engines.
+- **A configured status that matches nothing still renders, as a zero row**, so the block keeps its
+  shape as the filter narrows. A receipt whose status is *not* configured still counts toward the
+  overall row, or the total would disagree with the table's own count.
+- **Neither client re-requests on paging or sorting** — neither changes which receipts the filter
+  matches. That, plus skipping the request entirely for a group that has not opted in, is what keeps
+  an unpaged aggregate affordable on the app's hottest screen. Mobile's split is structural rather
+  than conventional: its sort setters already bypass the notification the summary listens to. See
+  `mobile/CLAUDE.md` → "Receipt summary".
+- **The synthetic "All" group picks a configuration via chips**, since it spans several groups and
+  has none of its own; the data still spans every group. Desktop persists that pick to localStorage;
+  mobile keeps it in `ReceiptListModel` for the session, having no persisted slice of its own.
+- **`receiptSummaryPosition` rides on the summary RESPONSE, not just on the group settings.** A
+  client's cached `groupReceiptSettings` is stale the moment an admin changes the configuration, and
+  placement is configuration — so both clients render where the current 200 says, exactly as they
+  already do for `enabled`. The server normalizes an empty position to `BOTTOM` at every emit point,
+  because an empty enum fails a closed Dart `EnumClass` and with it the whole payload; the enum
+  itself carries `TOP` and `BOTTOM` only, and the generated Dart client's unknown-value fallback
+  lands on `BOTTOM`, so client and server agree on the degradation by construction.
+- **Placement means different mechanics per client.** Desktop *moves* one `ng-template` between two
+  anchors, and top means above the who-owes-whom settlement card as well as above the table. Mobile
+  pins the block above or below its list — free, because `PagedDataList` is an `Expanded` — which is
+  what makes the bottom position reachable at all under infinite scroll. Both slots must hold a
+  **stable widget type**, or `PagedDataList` loses its State and silently refetches page 1.
+- **E2e per client**, because both unit suites inject group settings into a mocked store and so
+  prove nothing about the wire: `desktop/e2e/receipt-summary.spec.ts` and
+  `mobile/integration_test/receipt_summary_test.dart`. Between them they cover the settings
+  round-trip through the real resolver, the figures off a real decimal fold, a filter recomputing
+  every row, the All-group chip pick surviving a reload, and the position surviving
+  model → command → DB → response → render.
+
+### Seeding the Group Field
+
+Both clients pre-select the receipt's group instead of handing the user a picker they have no real
+choice in. **Client-only** — no backend, swagger or generated-client involvement.
+
+- **The rule is "the picker has exactly one option", not "the user has one group".** Every user also
+  carries the synthetic **"All" group** (`Group.isAllGroup`), which the API even sorts *first*, so a
+  single-group user has two entries in state and lands on "All" by default. The count must therefore
+  come from the same filtered set the picker offers: `GroupState.soleGroupId` (desktop, built off
+  `groupsWithoutAll`) and `GroupModel.soleGroupId` (mobile, off `groupsWithoutAllGroup` — which
+  `buildGroupDropDownMenuItems` also sources, so the seed can never be an id the dropdown lacks and
+  trip `DropdownButton`'s "exactly one item with value" assert).
+- **Precedence.** Manual form: the receipt's own group → the group being browsed (never "All", and
+  still resolvable) → sole group → blank. Quick Scan: `userPreferences.quickScanDefaultGroupId` →
+  sole group → blank. The user's own quick-scan default always wins.
+- **On desktop the permission gate follows the seed.** `setReceiptPermissions()` and the
+  `/receipts/add` route guard resolve the same `GroupState.addTargetGroupId`, so a sole-group user is
+  not turned away because the group they happen to be browsing is the synthetic "All" one. Both fall
+  back to the selected group when there is no single add target, which keeps multi-group users
+  exactly as they were.
+- **Desktop's blank seed is `""`, never `0`.** `Validators.required` treats `0` as present, so a `0`
+  sentinel would let a group-less receipt submit. See `desktop/CLAUDE.md`.
+- **A seeded group is a picked group.** It applies that group's default custom fields on the add form
+  and, in Quick Scan, its show/require field config — exactly as a manual pick does.
+- **Mobile has to mirror the seed into `_ReceiptForm.groupId` too**, not just the dropdown: paid-by,
+  the category/tag pickers and the add-share button all read that State field and stay dead at `0`.
+  It happens in a post-frame callback because the resolution reads the route
+  (`getFormStateFromContext` / `getGroupId`), which is illegal in `initState`.
+- **The user-preferences "Quick Scan Default Group" control is deliberately left blank** — blank is
+  the encoded "no default", and pre-filling it would silently persist a group the user never chose.
+- **E2e per client**, because both unit suites inject a group list into a mocked store and so prove
+  nothing about the wire: `desktop/e2e/single-group-default.spec.ts` and
+  `mobile/integration_test/receipt_single_group_default_test.dart`. Both **provision their own
+  account** — a freshly created user owns exactly "My Receipts" plus "All" — since the shared e2e
+  accounts accumulate groups as other specs run.
+- **E2e helpers must work with the field already filled.** A desktop single-select autocomplete goes
+  `readonly` once it holds a value, so clicking it never opens the panel; mobile's dropdown opens
+  either way, but "wait for the option text to appear" stops meaning "the menu is up". Both suites'
+  shared pickers were hardened for this (`selectFirstOption`/`clearAutocomplete` in
+  `desktop/e2e/receipts.spec.ts`, `selectDropdown` in
+  `mobile/integration_test/helpers/form_actions.dart`).
+
+### Failed Uploads Keep Their Image
+
+A quick scan or email upload that fails keeps the file it was working from, and the user can preview
+or download it to enter the receipt by hand. **Backend + desktop**; the swagger change regenerates
+both clients, but mobile gets no new UI.
+
+- **The old cleanup was inverted.** It released a temp file once every referencing task was
+  `Completed` **or** `Archived` — and `Archived` is exactly what makes an activity rerunnable. At the
+  time no queue set `asynq.Retention`, so a successful task left Redis immediately and never reached
+  the completed set, meaning the only files it ever deleted were the ones it had to keep. It also
+  scanned only the email queue, and was registered inside `StartEmailPolling`, so an install without
+  email polling ran no temp cleanup at all. See `api/CLAUDE.md` → "Temporary file retention & cleanup"
+  for the replacement's precedence table and the two invariants that keep its orphan branch safe.
+- **`asynq.Retention` is now set — on the email queue only** (6h, `enqueueOptions` in
+  `wranglerasynq/task_enqueue.go`), so a *succeeded* email upload's attachment and OCR copy are
+  released on the next hourly sweep rather than after the retention window. Quick scan is excluded
+  because it already deletes its own file on success and is 1:1 task-to-file; email cannot, because
+  one attachment fans out to a sibling task per `groupSettingsId`. Two knock-on rules came with it,
+  both because a succeeded task now lingers in Redis: `Inspector.RunTask` does **not** refuse a task
+  by state, so the rerun endpoint enforces `Archived` itself (otherwise a rerun of a succeeded email
+  would duplicate its receipt), and a `Completed` task stops advertising its source file (otherwise
+  preview/download would appear on a succeeded activity and 404 an hour later).
+- **How long a file is kept is a System Setting** (`tempFileRetentionHours`, default 720 = 30 days,
+  bounds 24-8760), following the same pointer-and-omitted-column machinery as the refresh-token
+  lifetimes — an omitted key leaves the stored value alone.
+- **`canBeRestarted` now also requires the files a rerun reads**, so it stops advertising reruns that
+  cannot work. A body-only email reads none and stays rerunnable, which is why "expects a file" is
+  tracked separately from "has a file". **Mobile inherits this for free** —
+  `group_activity_list_item.dart` already gates its rerun slidable on the flag, so the regen is the
+  whole mobile change.
+- **`hasSourceFile` is deliberately NOT gated on `Archived`**, unlike `canBeRestarted`: asynq's retry
+  backoff means minutes pass before a task archives, and the user should not watch an activity sit at
+  FAILED with no way to get their image.
+- **Each client's gate keys on the activity's own group**, never the surface's. The desktop widget had
+  this wrong and hid every control on the "All" dashboard; mobile had fixed it years earlier. See
+  `desktop/CLAUDE.md` → "Activity source file".
+- **E2E on the desktop only** (`desktop/e2e/failed-activity-source-file.spec.ts`), because it is the
+  only test that can prove the image survived in `temp/` through a real failure. It forces the failure
+  by pointing the global AI provider at an unreachable host, so it works against the shared demo
+  backend too — which makes it a global-state-mutating, serial spec.
+
+### Quick Date Filter (month stepper)
+
+A month stepper — `‹ September 2026 ›` — plus a picker naming which date field it writes to, sitting
+above the receipts list on **both clients**. Stepping left or right adds or replaces that field's
+condition in the *same* filter the advanced filter dialog/screen drives, so the two can never
+disagree. **Client-only on both sides**: no backend, `swagger.yml` or generated-client involvement.
+
+- **A month is `BETWEEN [first day, last day]`** — the one operation that can express *any* month,
+  which is why the feature needed no API change. `WITHIN_CURRENT_MONTH` is **not** equivalent: the
+  server pins it to month-start through *today*, so it can only ever mean the current month.
+- **It targets one of three date fields** — `date` / `resolvedDate` / `createdAt` — chosen by the
+  user and held in the same state as the filter. **Switching is non-destructive and refetches
+  nothing**: it changes no condition, only which one the stepper describes, so the abandoned
+  condition stays applied and stays visible (a chip on desktop, a card on the filter screen on
+  mobile).
+- **The label degrades rather than hiding.** `"<Month> <Year>"` for a whole calendar month, `"Custom"`
+  for a condition the stepper cannot describe, `"All time"` for none. The arrows seed from **today's**
+  month when nothing is showing, then apply the delta, so `‹` and `›` never do the same thing.
+- **Each client stores the chosen field where its filter already lives**, and that is the one place
+  they differ meaningfully: desktop persists both to localStorage (so `monthFromFilterEntry` has to
+  accept ISO strings, and the field's default has to be applied on *read*), while mobile's
+  `ReceiptListModel` is in-memory and needs neither. Mobile still keeps the field on the **model**
+  rather than the list widget, because that widget is rebuilt on almost every navigation.
+- **E2e per client**, because both unit suites assert against a mocked API and so prove nothing about
+  the wire: `desktop/e2e/receipt-quick-date-filter.spec.ts` and
+  `mobile/integration_test/receipt_quick_date_filter_test.dart`. The mobile one **seeds relative to
+  `DateTime.now()`** — the shared mobile filter fixture is pinned to June 2026, which a
+  month-relative control drifts away from.
+- **The same field list drives the Report Builder's "Date field" picker**, next to "Period covering",
+  and that one **is** server-backed: `ReportPeriod.dateField` picks which receipt date the report
+  period filters. Adding a date field to desktop's `RECEIPT_DATE_FILTER_FIELDS` therefore also needs
+  `commands.ReceiptDateFilterKeys()` / `DateFilterField` and the swagger description, or the picker
+  offers a value the API rejects with a 400. `TestReceiptDateFilterKeys` pins the Go side. The wire
+  field is a plain string, not an enum, so mobile never breaks on a new key. See `api/CLAUDE.md` →
+  "The period's date field".
+
+See `desktop/CLAUDE.md` → "The month stepper targets one date field" and `mobile/CLAUDE.md` → "Quick
+date filter" for the per-client details.
+
+### Role-Required Receipt Fields & Single-Call Create
+
+A group role can require its members to keep **at least one comment** and/or **at least one image**
+on the group's receipts (`requireReceiptComment` / `requireReceiptImage`, group roles only, set on the
+desktop role form — mobile has no role UI). **All three components.**
+
+- **The server is the authority.** It enforces on create, on update (against the receipt's **stored**
+  comments/images, since edit mode still adds those immediately through their own endpoints), on
+  deleting the last comment/image (refused — replace by adding first, then deleting), and on the Quick
+  Scan comment. Each failure is a 400 validator error keyed `comments` / `files`.
+- **Waivers keep a user from being stuck:** the comment rule is off when the group hides comments or
+  the caller lacks `group.comments.create`; the image rule is off when the group hides images. The
+  resolved result rides AppData as `groupReceiptRequirements` (only groups with a requirement; absent
+  = nothing required; never `null`), which both clients use for their pre-submit check.
+- **Create is one call: `POST /receipt/withFiles`** (multipart: `receipt` + `files`), storing the
+  receipt, its comments and its images in one transaction. That is what lets the server see images at
+  create time — the old flow uploaded them after the receipt existed. The generated clients encode the
+  `receipt` part differently (desktop: an `application/json` blob part; Dart: a JSON form value), and
+  the server accepts both. Both clients use it; the "receipt added but images failed" state is gone.
+- **The JSON `POST /receipt/` is deprecated but kept** for already-released mobile builds. It enforces
+  the same rules, so for a role requiring an image it always 400s with an "update your app" message —
+  deliberately: an old client can never attach an image at create time.
+- **The synthetic "All" group is never a destination.** Both creates and Quick Scan 400 it, as a
+  move on update already did; neither client's group picker offers it, so this only closes a crafted
+  request. See `api/CLAUDE.md` → "The synthetic \"All\" group is never a destination".
+- E2e per client: `desktop/e2e/receipt-role-requirements.spec.ts` and
+  `mobile/integration_test/receipt_role_requirements_test.dart`. See `api/CLAUDE.md`,
+  `desktop/CLAUDE.md` and `mobile/CLAUDE.md` → "Role-required receipt fields & single-call create".
 
 ### State Management Patterns
 - **Backend**: Service layer handles business logic, repositories handle data access

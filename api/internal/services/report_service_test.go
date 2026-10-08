@@ -14,6 +14,7 @@ import (
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
 	"receipt-wrangler/api/internal/reporting"
+	"receipt-wrangler/api/internal/reporting/render"
 	"receipt-wrangler/api/internal/repositories"
 )
 
@@ -141,21 +142,65 @@ func TestReportService_ResolvePeriodBounds(t *testing.T) {
 	}
 }
 
-func TestReportService_ApplyPeriodWritesBetweenDateFilter(t *testing.T) {
-	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
-	filter := commands.ReceiptPagedRequestFilter{}
+// applyPeriod writes the period's BETWEEN onto exactly the date slot it covers —
+// an empty date field being the receipt date — and leaves every other slot as the
+// caller set it. The label describes the window only, whatever field it covers.
+func TestReportService_ApplyPeriodWritesTheChosenDateSlot(t *testing.T) {
+	now := time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)
+	wantStart := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2026, 6, 30, 23, 59, 59, 999999999, time.UTC)
 
-	label := applyPeriod(&filter, commands.ReportPeriod{Preset: commands.ReportPeriodThisMonth}, now)
+	tests := []struct {
+		dateField string
+		wantSlot  string
+	}{
+		{"", commands.ReceiptFilterKeyDate},
+		{commands.ReceiptFilterKeyDate, commands.ReceiptFilterKeyDate},
+		{commands.ReceiptFilterKeyResolvedDate, commands.ReceiptFilterKeyResolvedDate},
+		{commands.ReceiptFilterKeyCreatedAt, commands.ReceiptFilterKeyCreatedAt},
+		// A stored template is run without re-validation, so an unknown field
+		// falls back to the receipt date rather than dropping the period.
+		{"paidAt", commands.ReceiptFilterKeyDate},
+	}
+	for _, test := range tests {
+		t.Run("dateField="+test.dateField, func(t *testing.T) {
+			filter := commands.ReceiptPagedRequestFilter{}
+			sentinel := func(key string) commands.PagedRequestField {
+				return commands.PagedRequestField{Operation: commands.EQUALS, Value: "sentinel-" + key}
+			}
+			for _, key := range commands.ReceiptDateFilterKeys() {
+				*filter.DateFilterField(key) = sentinel(key)
+			}
+			filter.Name = sentinel("name")
 
-	if filter.Date.Operation != commands.BETWEEN {
-		t.Errorf("date operation = %q, want BETWEEN", filter.Date.Operation)
-	}
-	bounds, ok := filter.Date.Value.([]interface{})
-	if !ok || len(bounds) != 2 {
-		t.Fatalf("date value = %v, want a two-element bound slice", filter.Date.Value)
-	}
-	if label != "2026-05-01 to 2026-05-31" {
-		t.Errorf("label = %q", label)
+			label := applyPeriod(&filter, commands.ReportPeriod{Preset: commands.ReportPeriodThisMonth, DateField: test.dateField}, now)
+
+			if label != "2026-06-01 to 2026-06-30" {
+				t.Errorf("label = %q, want the window regardless of the date field", label)
+			}
+			for _, key := range commands.ReceiptDateFilterKeys() {
+				slot := *filter.DateFilterField(key)
+				if key != test.wantSlot {
+					if !reflect.DeepEqual(slot, sentinel(key)) {
+						t.Errorf("%s slot = %+v, want it left untouched", key, slot)
+					}
+					continue
+				}
+				if slot.Operation != commands.BETWEEN {
+					t.Errorf("%s operation = %q, want BETWEEN", key, slot.Operation)
+				}
+				bounds, ok := slot.Value.([]interface{})
+				if !ok || len(bounds) != 2 {
+					t.Fatalf("%s value = %v, want a two-element bound slice", key, slot.Value)
+				}
+				if !bounds[0].(time.Time).Equal(wantStart) || !bounds[1].(time.Time).Equal(wantEnd) {
+					t.Errorf("%s bounds = %v..%v, want %v..%v", key, bounds[0], bounds[1], wantStart, wantEnd)
+				}
+			}
+			if !reflect.DeepEqual(filter.Name, sentinel("name")) {
+				t.Errorf("name slot = %+v, want it left untouched", filter.Name)
+			}
+		})
 	}
 }
 
@@ -239,6 +284,75 @@ func TestReportService_AggregateSource(t *testing.T) {
 		if got := aggregateSource(test.fn, test.measure); got != test.want {
 			t.Errorf("aggregateSource(%q,%q) = %q, want %q", test.fn, test.measure, got, test.want)
 		}
+	}
+}
+
+// A render dimension carries the catalog's label AND data type, which is what
+// lets a renderer present a bucket rather than dump it — a boolean as Yes/No, a
+// date as a calendar day, money per the report's currency configuration. A key
+// the catalog does not know falls back to itself as the heading, and to plain
+// text.
+func TestReportService_BuildDimensions(t *testing.T) {
+	catalog, err := reporting.NewFieldCatalog(
+		reporting.FieldRef{Key: "paid_by", Label: "Paid By", DataType: reporting.TypeString},
+		reporting.FieldRef{Key: "date", Label: "Date", DataType: reporting.TypeDate},
+		reporting.FieldRef{Key: "custom_1", Label: "HST", DataType: reporting.TypeCurrency},
+		reporting.FieldRef{Key: "custom_5", Label: "Reimbursed", DataType: reporting.TypeBool},
+	)
+	if err != nil {
+		t.Fatalf("NewFieldCatalog() error = %v", err)
+	}
+
+	got := buildDimensions(
+		[]reporting.FieldKey{"paid_by", "date", "custom_1", "custom_5", "gone"},
+		catalog,
+		nil,
+	)
+	want := []render.Dimension{
+		{Key: "paid_by", Label: "Paid By", DataType: reporting.TypeString},
+		{Key: "date", Label: "Date", DataType: reporting.TypeDate},
+		{Key: "custom_1", Label: "HST", DataType: reporting.TypeCurrency},
+		{Key: "custom_5", Label: "Reimbursed", DataType: reporting.TypeBool},
+		{Key: "gone", Label: "gone", DataType: reporting.TypeString},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildDimensions() = %+v, want %+v", got, want)
+	}
+}
+
+// A grouping level renders as a leading column, so the request may name that
+// column itself. Only a non-blank override for a key that is actually grouped
+// takes effect: a blank one means "use the catalog label", and an entry naming
+// no grouping level is ignored rather than failing the report. The data type is
+// never affected — a renamed column still formats its buckets by type.
+func TestReportService_BuildDimensions_LabelOverrides(t *testing.T) {
+	catalog, err := reporting.NewFieldCatalog(
+		reporting.FieldRef{Key: "category", Label: "Category", DataType: reporting.TypeString},
+		reporting.FieldRef{Key: "date", Label: "Date", DataType: reporting.TypeDate},
+		reporting.FieldRef{Key: "paid_by", Label: "Paid By", DataType: reporting.TypeString},
+	)
+	if err != nil {
+		t.Fatalf("NewFieldCatalog() error = %v", err)
+	}
+
+	got := buildDimensions(
+		[]reporting.FieldKey{"category", "date", "paid_by", "gone"},
+		catalog,
+		map[string]string{
+			"category": "Expense Type", // renamed
+			"date":     "   ",          // blank after trimming -> catalog label
+			"gone":     "Renamed Key",  // unknown key still falls back to itself
+			"status":   "Never Used",   // not a grouping level at all
+		},
+	)
+	want := []render.Dimension{
+		{Key: "category", Label: "Expense Type", DataType: reporting.TypeString},
+		{Key: "date", Label: "Date", DataType: reporting.TypeDate},
+		{Key: "paid_by", Label: "Paid By", DataType: reporting.TypeString},
+		{Key: "gone", Label: "Renamed Key", DataType: reporting.TypeString},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildDimensions() = %+v, want %+v", got, want)
 	}
 }
 
@@ -362,7 +476,7 @@ func seedReportUserInGroups(t *testing.T, username string, groupNames ...string)
 	role, err := roleRepository.CreateGroupRole(
 		"Report Role "+username, "",
 		[]string{permissions.GroupReportsRead, permissions.GroupReceiptsRead},
-		nil, nil, nil, false,
+		nil, nil, nil, false, false,
 	)
 	if err != nil {
 		t.Fatalf("seed group role: %v", err)
@@ -486,11 +600,11 @@ func TestReportService_Generate_InvalidSpecIsClientError(t *testing.T) {
 	createReportReceipt(t, "household-1", userId, groupIds[0], nil)
 
 	command := aggregateReportCommand("Bad", groupIds, []string{commands.ReportFormatCsv})
-	command.GroupBy = []string{"amount"} // a measure cannot be grouped by
+	command.GroupBy = []string{"not_a_field"} // no such field in the catalog
 
 	_, err := NewReportService(nil).Generate(userId, command)
 	if err == nil {
-		t.Fatal("expected an error grouping by a measure, got none")
+		t.Fatal("expected an error grouping by an unknown field, got none")
 	}
 	var specErr *ReportSpecError
 	if !errors.As(err, &specErr) {
@@ -612,7 +726,7 @@ func TestReportService_Preview_InvalidSpecIsClientError(t *testing.T) {
 	createReportReceipt(t, "household-1", userId, groupIds[0], nil)
 
 	command := aggregateReportCommand("Bad", groupIds, nil)
-	command.GroupBy = []string{"amount"} // a measure cannot be grouped by
+	command.GroupBy = []string{"not_a_field"} // no such field in the catalog
 
 	_, err := NewReportService(nil).Preview(userId, command)
 	var specErr *ReportSpecError

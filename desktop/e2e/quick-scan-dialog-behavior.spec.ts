@@ -1,4 +1,4 @@
-import { expect, type Route, test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { creds, stubTokenRefresh } from './helpers/auth';
 import {
   apiCreateGroup,
@@ -18,7 +18,7 @@ import {
 // Deeper Quick Scan DIALOG behavior, complementing quick-scan-dialog.spec.ts
 // (which asserts a single static config snapshot). Everything is driven by
 // client-side AppData injection (see helpers/quick-scan.ts) so no server config
-// is mutated. The two SUBMIT specs mock recognition registration and per-file upload: the backend
+// is mutated. SUBMIT specs mock recognition registration and per-file upload: the backend
 // validates each group's PERSISTED config (which we intentionally don't touch),
 // so a real submit would 400 — capturing the request instead lets us assert the
 // exact registration metadata and file multipart the client builds (the "falls off the submission" half the
@@ -181,7 +181,7 @@ test.describe('Quick scan dialog behavior', () => {
   });
 
   // Gap #5 — the positive category path: a required category picked from the
-  // per-group catalog lets the submit through and rides the multipart.
+  // per-group catalog lets the submit through and rides the registration.
   test('a required category selected via the picker lets the submit through', async ({
     page,
   }) => {
@@ -256,13 +256,8 @@ test.describe('Quick scan dialog behavior', () => {
       ],
     });
 
-    // The form must block this client-side — fail loudly if a POST escapes.
-    let posted = false;
-    await page.route('**/api/recognitionTask', async (route: Route) => {
-      if (route.request().method() !== 'POST') { await route.continue(); return; }
-      posted = true;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    });
+    // The form must block this client-side before registration or upload.
+    const requests = await mockQuickScanTasks(page, adminId);
 
     const dialog = await openQuickScanDialog(page, groupA.id);
     await uploadQuickScanImages(dialog, 2);
@@ -290,6 +285,123 @@ test.describe('Quick scan dialog behavior', () => {
       page.getByText('Please fill in all required fields', { exact: false }),
     ).toBeVisible();
     await expect(dialog).toBeVisible(); // dialog stays open
-    expect(posted).toBe(false);
+    expect(requests.registrations).toHaveLength(0);
+    expect(requests.uploads).toHaveLength(0);
+  });
+  // The comment field: shown per config AND the caller's group.comments.create,
+  // required blocks the submit, and the typed text rides the registration.
+  test('a required comment blocks submit until filled, then rides per-file registration', async ({
+    page,
+  }) => {
+    await injectQuickScanAppData(page, {
+      groupConfigs: [
+        {
+          groupId: groupA.id,
+          config: {
+            quickScanPaidByEnabled: false,
+            quickScanStatusEnabled: false,
+            quickScanDefaultStatus: 'OPEN',
+            quickScanCategoriesEnabled: false,
+            quickScanTagsEnabled: false,
+            quickScanCommentEnabled: true,
+            quickScanCommentRequired: true,
+          },
+        },
+      ],
+      groupPermissions: { [groupA.id]: ['group.receipts.quick-scan', 'group.comments.create'] },
+    });
+
+    const requests = await mockQuickScanTasks(page, adminId);
+
+    const dialog = await openQuickScanDialog(page, groupA.id);
+    await uploadQuickScanImages(dialog, 1);
+    await selectImageGroup(page, dialog, groupA.name);
+
+    const comment = dialog.getByTestId('quick-scan-comment').getByRole('textbox');
+    await expect(comment).toBeVisible();
+
+    // Empty + required → the submit is refused and nothing is sent.
+    await dialog.getByTestId('dialog-submit-button').click();
+    await expect(page.getByText('Please fill in all required fields', { exact: false })).toBeVisible();
+    expect(requests.registrations).toHaveLength(0);
+    expect(requests.uploads).toHaveLength(0);
+
+    await comment.fill('Client dinner, reimbursable');
+    await dialog.getByTestId('dialog-submit-button').click();
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].comment).toBe('Client dinner, reimbursable');
+    expect(requests.uploads).toHaveLength(1);
+  });
+
+  // Without group.comments.create the field is hidden even when the group enables
+  // AND requires it — otherwise a member who cannot comment could never quick scan.
+  test('the comment field is hidden without group.comments.create and does not block submit', async ({
+    page,
+  }) => {
+    await injectQuickScanAppData(page, {
+      groupConfigs: [
+        {
+          groupId: groupA.id,
+          config: {
+            quickScanPaidByEnabled: false,
+            quickScanStatusEnabled: false,
+            quickScanDefaultStatus: 'OPEN',
+            quickScanCategoriesEnabled: false,
+            quickScanTagsEnabled: false,
+            quickScanCommentEnabled: true,
+            quickScanCommentRequired: true,
+          },
+        },
+      ],
+      groupPermissions: { [groupA.id]: ['group.receipts.quick-scan'] },
+    });
+
+    const requests = await mockQuickScanTasks(page, adminId);
+
+    const dialog = await openQuickScanDialog(page, groupA.id);
+    await uploadQuickScanImages(dialog, 1);
+    await selectImageGroup(page, dialog, groupA.name);
+
+    await expect(dialog.getByTestId('quick-scan-comment')).toHaveCount(0);
+
+    await dialog.getByTestId('dialog-submit-button').click();
+    await expect(dialog.getByTestId('quick-scan-current-batch')).toBeVisible();
+    await expect(dialog.getByText('Queued', { exact: true })).toBeVisible();
+    expect(requests.registrations).toHaveLength(1);
+    expect(requests.registrations[0].groupId).toBe(groupA.id);
+    expect(requests.registrations[0].comment).toBeUndefined();
+    expect(requests.uploads).toHaveLength(1);
+  });
+
+  // hideComments hides the whole group's comments, so it hides the quick-scan
+  // comment field too, without the config being changed.
+  test('the comment field is hidden when the group hides comments', async ({ page }) => {
+    await injectQuickScanAppData(page, {
+      groupConfigs: [
+        {
+          groupId: groupA.id,
+          config: {
+            quickScanPaidByEnabled: false,
+            quickScanStatusEnabled: false,
+            quickScanDefaultStatus: 'OPEN',
+            quickScanCategoriesEnabled: false,
+            quickScanTagsEnabled: false,
+            quickScanCommentEnabled: true,
+            quickScanCommentRequired: true,
+            hideComments: true,
+          },
+        },
+      ],
+      groupPermissions: { [groupA.id]: ['group.receipts.quick-scan', 'group.comments.create'] },
+    });
+
+    const dialog = await openQuickScanDialog(page, groupA.id);
+    await uploadQuickScanImages(dialog, 1);
+    await selectImageGroup(page, dialog, groupA.name);
+
+    await expect(dialog.getByTestId('quick-scan-comment')).toHaveCount(0);
   });
 });

@@ -69,7 +69,7 @@ func recognitionPipeline(t *testing.T, url string) (RecognitionTaskService, comm
 	ClearRolePermissionCacheForTests()
 	ClearGroupRoleGrantCacheForTests()
 	user, group, _ := seedReceiptImagePipeline(t, url)
-	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Recognition role", "", []string{permissions.GroupReceiptsRead, permissions.GroupReceiptsQuickScan, permissions.GroupActivitiesRerun}, nil, nil, nil, false)
+	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Recognition role", "", []string{permissions.GroupReceiptsRead, permissions.GroupReceiptsQuickScan, permissions.GroupActivitiesRerun, permissions.GroupCommentsCreate}, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,6 +259,10 @@ func TestRecognitionProcessExactlyOnce(t *testing.T) {
 	t.Cleanup(repositories.TruncateTestDb)
 	server, _ := newMockOllamaServerForService(t, http.StatusOK, recognitionAiResponse())
 	service, command := recognitionPipeline(t, server.URL)
+	command.Comment = "Team lunch"
+	if err := repositories.GetDB().Model(&models.GroupReceiptSettings{}).Where("group_id = ?", command.GroupId).Update("quick_scan_comment_enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
 	task := recognitionAccept(t, service, command)
 	if err := service.Process(context.Background(), task.ID, task.Generation, 0); err != nil {
 		t.Fatal(err)
@@ -275,6 +279,11 @@ func TestRecognitionProcessExactlyOnce(t *testing.T) {
 	if recognitionSourceExists(saved) {
 		t.Fatal("successful source not removed")
 	}
+	var comments []models.Comment
+	repositories.GetDB().Where("receipt_id = ?", *saved.ReceiptId).Find(&comments)
+	if len(comments) != 1 || comments[0].Comment != command.Comment || comments[0].UserId == nil || *comments[0].UserId != task.OwnerUserId {
+		t.Fatalf("comment not committed exactly once with receipt: %+v", comments)
+	}
 	service.RecordFailure(task.ID, task.Generation, 3, time.Time{}, true, "")
 	after, _ := service.Repository.Get(task.ID)
 	if after.Status != models.RecognitionSucceeded {
@@ -286,6 +295,10 @@ func TestRecognitionSaveRollbackRetainsSource(t *testing.T) {
 	t.Cleanup(repositories.TruncateTestDb)
 	server, _ := newMockOllamaServerForService(t, http.StatusOK, recognitionAiResponse())
 	service, command := recognitionPipeline(t, server.URL)
+	command.Comment = "Rollback comment"
+	if err := repositories.GetDB().Model(&models.GroupReceiptSettings{}).Where("group_id = ?", command.GroupId).Update("quick_scan_comment_enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
 	task := recognitionAccept(t, service, command)
 	db := repositories.GetDB()
 	callback := "recognition_test_commit_failure"
@@ -305,6 +318,10 @@ func TestRecognitionSaveRollbackRetainsSource(t *testing.T) {
 	db.Model(&models.Receipt{}).Where("name = ?", "Tracked receipt").Count(&count)
 	if count != 0 {
 		t.Fatal("receipt escaped transaction rollback")
+	}
+	db.Model(&models.Comment{}).Where("comment = ?", command.Comment).Count(&count)
+	if count != 0 {
+		t.Fatal("comment escaped receipt transaction rollback")
 	}
 	after, _ := service.Repository.Get(task.ID)
 	if after.ReceiptId != nil || !recognitionSourceExists(after) {

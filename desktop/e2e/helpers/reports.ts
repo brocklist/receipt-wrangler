@@ -10,7 +10,7 @@ export async function gotoReports(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Reports', level: 1 })).toBeVisible();
 }
 
-/** Navigate straight to the builder (New Report) and wait for it to render. */
+/** Navigate straight to the builder (Add Report) and wait for it to render. */
 export async function gotoReportBuilder(page: Page): Promise<void> {
   await page.goto('/reports/new');
   await expect(page.getByText('Report Builder')).toBeVisible();
@@ -63,9 +63,16 @@ export function waitForPreview(page: Page) {
  * Add a grouping level via the "Add grouping level…" picker and settle the
  * resulting debounced preview before returning, so a following pick on the same
  * (re-rendering) select doesn't race the refresh.
+ *
+ * A string matches the option's accessible name exactly. Pass a RegExp for a
+ * custom field: its "Custom" badge lives inside the option, so the accessible
+ * name reads "Tip Custom" and an exact-string match would never resolve.
  */
-export async function addGroupingLevel(page: Page, label: string): Promise<void> {
+export async function addGroupingLevel(page: Page, label: string | RegExp): Promise<void> {
   const combobox = page.getByRole('combobox', { name: /Add grouping level/ });
-  const option = page.getByRole('option', { name: label, exact: true });
+  const option =
+    typeof label === 'string'
+      ? page.getByRole('option', { name: label, exact: true })
+      : page.getByRole('option', { name: label });
   await Promise.all([waitForPreview(page), openComboboxAndPick(page, combobox, option)]);
 }

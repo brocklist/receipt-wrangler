@@ -2,11 +2,14 @@ import { CommonModule } from "@angular/common";
 import { NgModule } from "@angular/core";
 import { ReactiveFormsModule } from "@angular/forms";
 import { MatButton } from "@angular/material/button";
+import { MatChipsModule } from "@angular/material/chips";
 import { MatHint } from "@angular/material/form-field";
+import { MatIconModule } from "@angular/material/icon";
 import { AlertComponent } from "../alert/alert.component";
 import { AutocompleteModule } from "../autocomplete/autocomplete.module";
 import { ButtonModule } from "../button";
 import { CheckboxModule } from "../checkbox/checkbox.module";
+import { DirectivesModule } from "../directives";
 import { InputModule } from "../input";
 import { PipesModule } from "../pipes";
 import { PromptModule } from "../prompt/prompt.module";
@@ -22,6 +25,7 @@ import { SystemSettingsFormComponent } from "./system-settings-form/system-setti
 
 import { SystemSettingsRoutingModule } from "./system-settings-routing.module";
 import { SystemSettingsComponent } from "./system-settings/system-settings.component";
+import { SystemTaskFilterComponent } from "./system-task-filter/system-task-filter.component";
 import { SystemTaskTableComponent } from "./system-task-table/system-task-table.component";
 
 
@@ -31,12 +35,14 @@ import { SystemTaskTableComponent } from "./system-task-table/system-task-table.
     SystemEmailFormComponent,
     SystemSettingsFormComponent,
     SystemEmailChildSystemTaskComponent,
+    SystemTaskFilterComponent,
     SystemTaskTableComponent,
     TaskQueueFormControlPipe,
   ],
   imports: [
     ButtonModule,
     CommonModule,
+    DirectivesModule,
     InputModule,
     PipesModule,
     PromptModule,
@@ -48,6 +54,8 @@ import { SystemTaskTableComponent } from "./system-task-table/system-task-table.
     CheckboxModule,
     AutocompleteModule,
     MatButton,
+    MatChipsModule,
+    MatIconModule,
     SelectModule,
     MatHint,
     AlertComponent,

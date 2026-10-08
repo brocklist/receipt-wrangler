@@ -1,9 +1,13 @@
-<app-table-header headerText="Custom Fields">
+<app-table-header
+  headerText="Custom Fields"
+  subtitle="Capture extra structured data on receipts with custom fields."
+>
   <app-add-button
     *hasAppPermission="Permission.AppCustomFieldsCreate"
     data-testid="custom-field-add"
+    buttonText="Add Custom Field"
     (clicked)="openCustomFieldDialog()"
-    tooltip="Add custom field"
+    tooltip="Add Custom Field"
   >
   </app-add-button>
 </app-table-header>
@@ -34,6 +38,14 @@
 </ng-template>
 
 <ng-template #actionsCell let-element="element" let-index="index">
+  <app-edit-button
+    *hasAppPermission="Permission.AppCustomFieldsUpdate"
+    data-testid="custom-field-edit"
+    color="accent"
+    tooltip="Edit custom field"
+    (clicked)="openCustomFieldDialog(element, FormMode.edit)"
+  >
+  </app-edit-button>
   <app-delete-button
     *hasAppPermission="Permission.AppCustomFieldsDelete"
     data-testid="custom-field-delete"

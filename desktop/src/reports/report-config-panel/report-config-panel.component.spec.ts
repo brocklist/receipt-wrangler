@@ -4,8 +4,16 @@ import { FormArray, FormBuilder, FormGroup } from "@angular/forms";
 import { MatDialog } from "@angular/material/dialog";
 import { Store } from "@ngxs/store";
 import { of } from "rxjs";
-import { CustomFieldService, ReportColumn, ReportDetail, ReportPeriod } from "../../open-api";
+import { RECEIPT_DATE_FILTER_FIELDS } from "src/constants";
+import {
+  CustomFieldService,
+  CustomFieldType,
+  ReportColumn,
+  ReportDetail,
+  ReportPeriod,
+} from "../../open-api";
 import { buildColumnGroup } from "../models/report-form.factory";
+import { ReportCatalogService } from "../services/report-catalog.service";
 import { ReportConfigPanelComponent } from "./report-config-panel.component";
 
 const GROUPS = [
@@ -28,6 +36,7 @@ function buildForm(formBuilder: FormBuilder): FormGroup {
       preset: formBuilder.control<string>(ReportPeriod.PresetEnum.ThisMonth),
       startDate: formBuilder.control<Date | null>(null),
       endDate: formBuilder.control<Date | null>(null),
+      dateField: formBuilder.control<string>("date"),
     }),
     document: formBuilder.group({ intro: formBuilder.control("") }),
   });
@@ -39,9 +48,11 @@ describe("ReportConfigPanelComponent", () => {
   let form: FormGroup;
   let formBuilder: FormBuilder;
   let dialog: { open: jest.Mock };
+  let customFieldService: { getPagedCustomFields: jest.Mock };
 
   beforeEach(async () => {
     dialog = { open: jest.fn() };
+    customFieldService = { getPagedCustomFields: jest.fn(() => of({ data: [], totalCount: 0 })) };
 
     await TestBed.configureTestingModule({
       declarations: [ReportConfigPanelComponent],
@@ -50,7 +61,7 @@ describe("ReportConfigPanelComponent", () => {
         FormBuilder,
         { provide: Store, useValue: { selectSignal: () => signal(GROUPS) } },
         { provide: MatDialog, useValue: dialog },
-        { provide: CustomFieldService, useValue: { getPagedCustomFields: jest.fn(() => of({ data: [], totalCount: 0 })) } },
+        { provide: CustomFieldService, useValue: customFieldService },
       ],
       schemas: [NO_ERRORS_SCHEMA],
     })
@@ -80,7 +91,7 @@ describe("ReportConfigPanelComponent", () => {
     component.addGroupControl.setValue("paid_by");
 
     expect(groupBy.length).toBe(1);
-    expect(groupBy.at(0).value).toBe("paid_by");
+    expect(groupBy.at(0).value).toEqual({ field: "paid_by", label: "" });
     expect(component.addGroupControl.value).toBeNull();
   });
 
@@ -140,6 +151,188 @@ describe("ReportConfigPanelComponent", () => {
     expect(component.groupByLevels().length).toBe(0);
   });
 
+  // ---- grouping column headings ------------------------------------------
+
+  function groupByArray(): FormArray {
+    return form.get("groupBy") as FormArray;
+  }
+
+  it("opens the column picker for a grouping level with its field locked and seeded", () => {
+    component.addGroupBy("paid_by");
+    dialog.open.mockReturnValue({ afterClosed: () => of(undefined) });
+
+    component.openGroupingLabelPicker(0);
+
+    const data = dialog.open.mock.calls[0][1].data;
+    expect(data.lockField).toBe(true);
+    // Handed to the picker as the dimension column it is, seeded with the heading
+    // the level currently renders with, so the picker opens straight on the
+    // dimension step in edit mode.
+    expect(data.column).toEqual(
+      expect.objectContaining({
+        kind: ReportColumn.KindEnum.Dimension,
+        field: "paid_by",
+        label: "Paid By",
+      })
+    );
+    expect(data.column.id).toBeTruthy();
+  });
+
+  it("stores a renamed heading on the level and shows it in the grouping list", () => {
+    component.addGroupBy("paid_by");
+    dialog.open.mockReturnValue({
+      afterClosed: () =>
+        of({ id: "x", kind: ReportColumn.KindEnum.Dimension, name: "paid_by", label: "  Payer  ", field: "paid_by" }),
+    });
+
+    component.openGroupingLabelPicker(0);
+
+    expect(groupByArray().at(0).get("label")!.value).toBe("Payer");
+    expect(component.groupByLevels().map((level) => level.label)).toEqual(["Payer"]);
+  });
+
+  it("clears the override when the entered heading is the field's own label", () => {
+    component.addGroupBy("paid_by");
+    dialog.open.mockReturnValue({
+      afterClosed: () =>
+        of({ id: "x", kind: ReportColumn.KindEnum.Dimension, name: "paid_by", label: "Payer", field: "paid_by" }),
+    });
+    component.openGroupingLabelPicker(0);
+    expect(groupByArray().at(0).get("label")!.value).toBe("Payer");
+
+    // Retyping the catalog label is how a user resets to the default — nothing is
+    // stored, so the report falls back to the field's own heading.
+    dialog.open.mockReturnValue({
+      afterClosed: () =>
+        of({ id: "x", kind: ReportColumn.KindEnum.Dimension, name: "paid_by", label: "Paid By", field: "paid_by" }),
+    });
+    component.openGroupingLabelPicker(0);
+
+    expect(groupByArray().at(0).get("label")!.value).toBe("");
+    expect(component.groupByLevels().map((level) => level.label)).toEqual(["Paid By"]);
+  });
+
+  it("is a no-op when the picker is cancelled", () => {
+    component.addGroupBy("paid_by");
+    dialog.open.mockReturnValue({ afterClosed: () => of(undefined) });
+
+    component.openGroupingLabelPicker(0);
+
+    expect(groupByArray().at(0).get("label")!.value).toBe("");
+  });
+
+  it("keeps a heading with its level when the levels are reordered", () => {
+    component.addGroupBy("paid_by");
+    component.addGroupBy("tag");
+    dialog.open.mockReturnValue({
+      afterClosed: () =>
+        of({ id: "x", kind: ReportColumn.KindEnum.Dimension, name: "tag", label: "Label", field: "tag" }),
+    });
+    component.openGroupingLabelPicker(1);
+
+    component.moveGroupBy(1, -1);
+
+    expect(component.groupByLevels().map((level) => level.label)).toEqual(["Label", "Paid By"]);
+  });
+
+  it("drops the heading with the level it belongs to", () => {
+    component.addGroupBy("paid_by");
+    dialog.open.mockReturnValue({
+      afterClosed: () =>
+        of({ id: "x", kind: ReportColumn.KindEnum.Dimension, name: "paid_by", label: "Payer", field: "paid_by" }),
+    });
+    component.openGroupingLabelPicker(0);
+
+    // Removing then re-adding the field must not resurrect the old rename.
+    component.removeGroupBy(0);
+    component.addGroupBy("paid_by");
+
+    expect(groupByArray().at(0).get("label")!.value).toBe("");
+    expect(component.groupByLevels().map((level) => level.label)).toEqual(["Paid By"]);
+  });
+
+  // ---- custom fields ------------------------------------------------------
+
+  /** Loads a custom-field pool into the catalog the component is already bound to. */
+  function loadCustomFields(): void {
+    customFieldService.getPagedCustomFields.mockReturnValue(
+      of({
+        data: [
+          { id: 7, name: "HST", type: CustomFieldType.Currency },
+          { id: 8, name: "Vendor", type: CustomFieldType.Text },
+        ],
+        totalCount: 2,
+      })
+    );
+    TestBed.inject(ReportCatalogService).load();
+  }
+
+  // A currency custom field is a measure, but measuring is the only thing its type
+  // restricts — it is groupable too.
+  it("offers a currency custom field as a grouping level and as a measure", () => {
+    loadCustomFields();
+
+    expect(component.addableDimensions().map((field) => field.key)).toContain("custom_7");
+    expect(component.measures().map((field) => field.key)).toContain("custom_7");
+
+    component.addGroupBy("custom_7");
+    expect(component.groupByLevels().map((level) => level.label)).toEqual(["HST"]);
+  });
+
+  it("flags grouping levels and columns that read a custom field", () => {
+    loadCustomFields();
+
+    component.addGroupBy("custom_8");
+    component.addGroupBy("paid_by");
+    expect(component.groupByLevels().map((level) => level.isCustom)).toEqual([true, false]);
+
+    columnsArray().push(
+      buildColumnGroup(formBuilder, {
+        kind: ReportColumn.KindEnum.Dimension,
+        name: "Vendor",
+        label: "Vendor",
+        field: "custom_8",
+      })
+    );
+    columnsArray().push(
+      buildColumnGroup(formBuilder, {
+        kind: ReportColumn.KindEnum.Aggregate,
+        name: "Hst",
+        label: "HST",
+        aggFunc: ReportColumn.AggFuncEnum.Sum,
+        measure: "custom_7",
+      })
+    );
+    columnsArray().push(
+      buildColumnGroup(formBuilder, {
+        kind: ReportColumn.KindEnum.Aggregate,
+        name: "Total",
+        label: "Total",
+        aggFunc: ReportColumn.AggFuncEnum.Sum,
+        measure: "amount",
+      })
+    );
+    form.get("detail.by")!.setValue("custom_8");
+
+    const byLabel = new Map(component.columnRows().map((row) => [row.label, row.isCustom]));
+    expect(byLabel.get("Vendor")).toBe(true);
+    expect(byLabel.get("HST")).toBe(true);
+    expect(byLabel.get("Total")).toBe(false);
+  });
+
+  it("badges custom fields in the dropdown options", () => {
+    loadCustomFields();
+
+    const options = new Map(
+      component.addableDimensionOptions().map((option) => [option.value, option.badge])
+    );
+    expect(options.get("custom_7")).toBe("Custom");
+    expect(options.get("category")).toBe("");
+    expect(
+      component.dimensionOptions().find((option) => option.value === "custom_8")?.badge
+    ).toBe("Custom");
+  });
+
   // ---- detail mode -------------------------------------------------------
 
   it("setDetailMode updates the form and the detailMode getter", () => {
@@ -190,6 +383,20 @@ describe("ReportConfigPanelComponent", () => {
     expect(total.disabled).toBe(false);
   });
 
+  it("columnRows leaves every dimension column enabled in records mode", () => {
+    columnsArray().push(buildColumnGroup(formBuilder, { kind: ReportColumn.KindEnum.Dimension, name: "Category", label: "Category", field: "category" }));
+
+    // The same config that disables the column in aggregate mode: summarizing by
+    // tag, no grouping. A record row reads the field off the receipt itself, so
+    // the column stays enabled and configurable.
+    form.get("detail.by")!.setValue("tag");
+    component.setDetailMode(ReportDetail.ModeEnum.Records);
+
+    const category = component.columnRows().find((row) => row.label === "Category")!;
+    expect(category.disabled).toBe(false);
+    expect(category.disabledReason).toBe("");
+  });
+
   // ---- parameters + document --------------------------------------------
 
   it("periodLabel resolves the preset, and reports a custom range with no dates", () => {
@@ -197,6 +404,26 @@ describe("ReportConfigPanelComponent", () => {
 
     form.get("period.preset")!.setValue(ReportPeriod.PresetEnum.Custom);
     expect(component.periodLabel()).toBe("a custom range");
+  });
+
+  // The picker must offer exactly the receipts table quick date filter's fields,
+  // in its order, so a report and the table never name a date differently.
+  it("offers the quick date filter's date fields, in order, as the period date field", () => {
+    expect(component.periodDateFieldOptions).toEqual(
+      RECEIPT_DATE_FILTER_FIELDS.map((field) => ({ value: field.key, displayValue: field.label }))
+    );
+    expect(component.periodDateFieldOptions.map((option) => option.displayValue)).toEqual([
+      "Receipt Date",
+      "Resolved Date",
+      "Added At",
+    ]);
+  });
+
+  it("periodDateFieldLabel names the date field the period covers", () => {
+    expect(component.periodDateFieldLabel()).toBe("Receipt Date");
+
+    form.get("period.dateField")!.setValue("createdAt");
+    expect(component.periodDateFieldLabel()).toBe("Added At");
   });
 
   it("insertVariable appends tokens to the document intro", () => {

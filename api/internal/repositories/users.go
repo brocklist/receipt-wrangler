@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"errors"
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
@@ -88,15 +89,27 @@ func (repository UserRepository) CreateUser(userData commands.SignUpCommand) (mo
 			return err
 		}
 
-		groupCommand := commands.UpsertGroupCommand{
-			Name:           "My Receipts",
-			IsDefaultGroup: true,
-		}
-
-		_, err := groupRepository.CreateGroup(groupCommand, user.ID)
+		// An app role may opt its users out of the personal "My Receipts" group, for
+		// accounts that are only ever meant to live in specific shared groups. The
+		// virtual "All" group is always created, so the account still has a working
+		// dashboard.
+		skipDefaultGroup, err := repository.appRoleSkipsDefaultGroup(tx, user.AppRoleID)
 		if err != nil {
 			repository.ClearTransaction()
 			return err
+		}
+
+		if !skipDefaultGroup {
+			groupCommand := commands.UpsertGroupCommand{
+				Name:           "My Receipts",
+				IsDefaultGroup: true,
+			}
+
+			_, err := groupRepository.CreateGroup(groupCommand, user.ID)
+			if err != nil {
+				repository.ClearTransaction()
+				return err
+			}
 		}
 
 		_, err = groupRepository.CreateAllGroup(user.ID)
@@ -120,6 +133,28 @@ func (repository UserRepository) CreateUser(userData commands.SignUpCommand) (mo
 	}
 
 	return user, nil
+}
+
+// appRoleSkipsDefaultGroup reports whether a newly-created user's app role opts
+// out of the personal "My Receipts" group. Best-effort in the same way as
+// resolveAppRoleId: an unassigned (nil) or missing role falls back to creating
+// the group rather than failing user creation. Any *other* lookup error
+// propagates and rolls the creation back — a transient DB failure must not
+// silently decide which groups an account is created with.
+func (repository UserRepository) appRoleSkipsDefaultGroup(tx *gorm.DB, appRoleId *uint) (bool, error) {
+	if appRoleId == nil {
+		return false, nil
+	}
+
+	skip, err := NewRoleRepository(tx).AppRoleSkipsDefaultGroup(*appRoleId)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return skip, nil
 }
 
 // resolveAppRoleId picks the modern app role for a newly-created user: the
@@ -182,6 +217,41 @@ func (repository UserRepository) GetAllUserViews() ([]structs.UserView, error) {
 	}
 
 	return users, nil
+}
+
+func (repository UserRepository) GetPagedUsers(command commands.PagedRequestCommand) ([]structs.UserView, int64, error) {
+	db := repository.GetDB()
+	var results []structs.UserView
+	var count int64
+
+	query := db.Model(&models.User{})
+
+	err := query.Count(&count).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	validColumn := repository.isUserSortColumn(command.OrderBy)
+	if !validColumn {
+		return nil, 0, errors.New("invalid column: " + command.OrderBy)
+	}
+
+	query = repository.Sort(query, command.OrderBy, command.SortDirection)
+	query = query.Scopes(repository.Paginate(command.Page, command.PageSize))
+
+	err = query.Find(&results).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return results, count, nil
+}
+
+func (repository UserRepository) isUserSortColumn(orderBy string) bool {
+	return orderBy == "username" ||
+		orderBy == "display_name" ||
+		orderBy == "created_at" ||
+		orderBy == "updated_at"
 }
 
 func (repository UserRepository) GetUserById(userId uint) (structs.UserView, error) {

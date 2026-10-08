@@ -85,6 +85,7 @@ Class | Method | HTTP request | Description
 [*CustomFieldApi*](doc/CustomFieldApi.md) | [**deleteCustomField**](doc/CustomFieldApi.md#deletecustomfield) | **DELETE** /customField/{customFieldId} | Delete custom field
 [*CustomFieldApi*](doc/CustomFieldApi.md) | [**getCustomFieldById**](doc/CustomFieldApi.md#getcustomfieldbyid) | **GET** /customField/{customFieldId} | Get custom field
 [*CustomFieldApi*](doc/CustomFieldApi.md) | [**getPagedCustomFields**](doc/CustomFieldApi.md#getpagedcustomfields) | **POST** /customField/getPagedCustomFields | Get paged custom fields
+[*CustomFieldApi*](doc/CustomFieldApi.md) | [**updateCustomField**](doc/CustomFieldApi.md#updatecustomfield) | **PUT** /customField/{customFieldId} | Update custom field
 [*DashboardApi*](doc/DashboardApi.md) | [**createDashboard**](doc/DashboardApi.md#createdashboard) | **POST** /dashboard/ | Create dashboard
 [*DashboardApi*](doc/DashboardApi.md) | [**deleteDashboard**](doc/DashboardApi.md#deletedashboard) | **DELETE** /dashboard/{dashboardId} | Delete dashboard
 [*DashboardApi*](doc/DashboardApi.md) | [**getDashboardsForUserByGroupId**](doc/DashboardApi.md#getdashboardsforuserbygroupid) | **GET** /dashboard/{groupId} | Get dashboards for a user by group id
@@ -99,6 +100,7 @@ Class | Method | HTTP request | Description
 [*GroupsApi*](doc/GroupsApi.md) | [**getPagedGroups**](doc/GroupsApi.md#getpagedgroups) | **POST** /group/getPagedGroups | Get paged groups
 [*GroupsApi*](doc/GroupsApi.md) | [**pollGroupEmail**](doc/GroupsApi.md#pollgroupemail) | **POST** /group/{groupId}/pollGroupEmail | Poll group email
 [*GroupsApi*](doc/GroupsApi.md) | [**updateGroup**](doc/GroupsApi.md#updategroup) | **PUT** /group/{groupId} | Update a group
+[*GroupsApi*](doc/GroupsApi.md) | [**updateGroupMemberGrants**](doc/GroupsApi.md#updategroupmembergrants) | **PUT** /group/{groupId}/member/{userId}/grants | Update a group member&#39;s category and tag assignment
 [*GroupsApi*](doc/GroupsApi.md) | [**updateGroupReceiptSettings**](doc/GroupsApi.md#updategroupreceiptsettings) | **PUT** /group/{groupId}/groupReceiptSettings | Update group receipt settings
 [*GroupsApi*](doc/GroupsApi.md) | [**updateGroupSettings**](doc/GroupsApi.md#updategroupsettings) | **PUT** /group/{groupId}/groupSettings | Update group settings
 [*ImportApi*](doc/ImportApi.md) | [**importConfigJson**](doc/ImportApi.md#importconfigjson) | **POST** /import/importConfigJson | Import config json
@@ -115,9 +117,11 @@ Class | Method | HTTP request | Description
 [*PromptApi*](doc/PromptApi.md) | [**updatePromptById**](doc/PromptApi.md#updatepromptbyid) | **PUT** /prompt/{id} | Update prompt by id
 [*ReceiptApi*](doc/ReceiptApi.md) | [**bulkReceiptStatusUpdate**](doc/ReceiptApi.md#bulkreceiptstatusupdate) | **POST** /receipt/bulkStatusUpdate | Bulk receipt status update
 [*ReceiptApi*](doc/ReceiptApi.md) | [**createReceipt**](doc/ReceiptApi.md#createreceipt) | **POST** /receipt/ | Create receipt
+[*ReceiptApi*](doc/ReceiptApi.md) | [**createReceiptWithFiles**](doc/ReceiptApi.md#createreceiptwithfiles) | **POST** /receipt/withFiles | Create receipt with files
 [*ReceiptApi*](doc/ReceiptApi.md) | [**deleteReceiptById**](doc/ReceiptApi.md#deletereceiptbyid) | **DELETE** /receipt/{receiptId} | Delete receipt
 [*ReceiptApi*](doc/ReceiptApi.md) | [**duplicateReceipt**](doc/ReceiptApi.md#duplicatereceipt) | **POST** /receipt/{receiptId}/duplicate | Duplicate receipt
 [*ReceiptApi*](doc/ReceiptApi.md) | [**getReceiptById**](doc/ReceiptApi.md#getreceiptbyid) | **GET** /receipt/{receiptId} | Get receipt
+[*ReceiptApi*](doc/ReceiptApi.md) | [**getReceiptSummaryForGroup**](doc/ReceiptApi.md#getreceiptsummaryforgroup) | **POST** /receipt/group/{groupId}/summary | Gets the receipt summary for a group
 [*ReceiptApi*](doc/ReceiptApi.md) | [**getReceiptsForGroup**](doc/ReceiptApi.md#getreceiptsforgroup) | **POST** /receipt/group/{groupId} | Gets receipts
 [*ReceiptApi*](doc/ReceiptApi.md) | [**hasAccessToReceipt**](doc/ReceiptApi.md#hasaccesstoreceipt) | **GET** /receipt/hasAccess | Has access to receipt
 [*ReceiptApi*](doc/ReceiptApi.md) | [**quickScanReceipt**](doc/ReceiptApi.md#quickscanreceipt) | **POST** /receipt/quickScan | Quick scan a receipt
@@ -144,6 +148,7 @@ Class | Method | HTTP request | Description
 [*ReportApi*](doc/ReportApi.md) | [**duplicateReportTemplate**](doc/ReportApi.md#duplicatereporttemplate) | **POST** /report/template/{id}/duplicate | Duplicate a report template
 [*ReportApi*](doc/ReportApi.md) | [**generateReport**](doc/ReportApi.md#generatereport) | **POST** /report/generate | Generate a report
 [*ReportApi*](doc/ReportApi.md) | [**generateReportFromTemplate**](doc/ReportApi.md#generatereportfromtemplate) | **POST** /report/template/{id}/generate | Generate a report from a saved template
+[*ReportApi*](doc/ReportApi.md) | [**getReportReceipts**](doc/ReportApi.md#getreportreceipts) | **POST** /report/receipts | List the receipts a report covers
 [*ReportApi*](doc/ReportApi.md) | [**getReportTemplate**](doc/ReportApi.md#getreporttemplate) | **GET** /report/template/{id} | Get a report template
 [*ReportApi*](doc/ReportApi.md) | [**getReportTemplateOptions**](doc/ReportApi.md#getreporttemplateoptions) | **GET** /report/template/options | Get report template options
 [*ReportApi*](doc/ReportApi.md) | [**getReportTemplates**](doc/ReportApi.md#getreporttemplates) | **POST** /report/template/list | Get paged report templates
@@ -165,8 +170,10 @@ Class | Method | HTTP request | Description
 [*SystemSettingsApi*](doc/SystemSettingsApi.md) | [**getSystemSettings**](doc/SystemSettingsApi.md#getsystemsettings) | **GET** /systemSettings | Get system settings
 [*SystemSettingsApi*](doc/SystemSettingsApi.md) | [**restartTaskServer**](doc/SystemSettingsApi.md#restarttaskserver) | **POST** /systemSettings/restartTaskServer | Restart task server
 [*SystemSettingsApi*](doc/SystemSettingsApi.md) | [**updateSystemSettings**](doc/SystemSettingsApi.md#updatesystemsettings) | **PUT** /systemSettings | Update system settings
+[*SystemTaskApi*](doc/SystemTaskApi.md) | [**downloadSystemTaskSourceFile**](doc/SystemTaskApi.md#downloadsystemtasksourcefile) | **GET** /systemTask/{id}/sourceFile/download | Download an activity&#39;s source file
 [*SystemTaskApi*](doc/SystemTaskApi.md) | [**getPagedActivities**](doc/SystemTaskApi.md#getpagedactivities) | **POST** /systemTask/getPagedActivities | Gets paged activities
 [*SystemTaskApi*](doc/SystemTaskApi.md) | [**getPagedSystemTasks**](doc/SystemTaskApi.md#getpagedsystemtasks) | **POST** /systemTask/getPagedSystemTasks | Gets paged system tasks
+[*SystemTaskApi*](doc/SystemTaskApi.md) | [**getSystemTaskSourceFile**](doc/SystemTaskApi.md#getsystemtasksourcefile) | **GET** /systemTask/{id}/sourceFile | Get an activity&#39;s source file
 [*SystemTaskApi*](doc/SystemTaskApi.md) | [**rerunActivity**](doc/SystemTaskApi.md#rerunactivity) | **POST** /systemTask/rerunActivity/{id} | Attempts to rerun activity
 [*TagApi*](doc/TagApi.md) | [**createTag**](doc/TagApi.md#createtag) | **POST** /tag/ | Create tag
 [*TagApi*](doc/TagApi.md) | [**deleteTag**](doc/TagApi.md#deletetag) | **DELETE** /tag/{tagId} | Delete tag
@@ -181,6 +188,7 @@ Class | Method | HTTP request | Description
 [*UserApi*](doc/UserApi.md) | [**deleteUserById**](doc/UserApi.md#deleteuserbyid) | **DELETE** /user/{userId} | Delete user
 [*UserApi*](doc/UserApi.md) | [**getAmountOwedForUser**](doc/UserApi.md#getamountowedforuser) | **GET** /user/amountOwedForUser | Get amount owed for user
 [*UserApi*](doc/UserApi.md) | [**getAppData**](doc/UserApi.md#getappdata) | **GET** /user/appData | Get app data
+[*UserApi*](doc/UserApi.md) | [**getPagedUsers**](doc/UserApi.md#getpagedusers) | **POST** /user/getPagedUsers | Gets paged users
 [*UserApi*](doc/UserApi.md) | [**getUserClaims**](doc/UserApi.md#getuserclaims) | **GET** /user/getUserClaims | Get claims for logged in user
 [*UserApi*](doc/UserApi.md) | [**getUsernameCount**](doc/UserApi.md#getusernamecount) | **GET** /user/{username} | Get username count
 [*UserApi*](doc/UserApi.md) | [**getUsers**](doc/UserApi.md#getusers) | **GET** /user | Get users
@@ -269,7 +277,13 @@ Class | Method | HTTP request | Description
  - [ReceiptPagedRequestCommand](doc/ReceiptPagedRequestCommand.md)
  - [ReceiptPagedRequestFilter](doc/ReceiptPagedRequestFilter.md)
  - [ReceiptProcessingSettings](doc/ReceiptProcessingSettings.md)
+ - [ReceiptRequirements](doc/ReceiptRequirements.md)
  - [ReceiptStatus](doc/ReceiptStatus.md)
+ - [ReceiptSummary](doc/ReceiptSummary.md)
+ - [ReceiptSummaryCommand](doc/ReceiptSummaryCommand.md)
+ - [ReceiptSummaryCustomFieldTotal](doc/ReceiptSummaryCustomFieldTotal.md)
+ - [ReceiptSummaryPosition](doc/ReceiptSummaryPosition.md)
+ - [ReceiptSummaryRow](doc/ReceiptSummaryRow.md)
  - [RecognitionTask](doc/RecognitionTask.md)
  - [RecognitionTaskStage](doc/RecognitionTaskStage.md)
  - [RecognitionTaskStatus](doc/RecognitionTaskStatus.md)
@@ -292,12 +306,15 @@ Class | Method | HTTP request | Description
  - [SystemEmail](doc/SystemEmail.md)
  - [SystemSettings](doc/SystemSettings.md)
  - [SystemTask](doc/SystemTask.md)
+ - [SystemTaskPagedRequestFilter](doc/SystemTaskPagedRequestFilter.md)
+ - [SystemTaskSourceFileView](doc/SystemTaskSourceFileView.md)
  - [SystemTaskStatus](doc/SystemTaskStatus.md)
  - [SystemTaskType](doc/SystemTaskType.md)
  - [Tag](doc/Tag.md)
  - [TagView](doc/TagView.md)
  - [TaskQueueConfiguration](doc/TaskQueueConfiguration.md)
  - [TokenPair](doc/TokenPair.md)
+ - [UpdateGroupMemberGrantsCommand](doc/UpdateGroupMemberGrantsCommand.md)
  - [UpdateGroupReceiptSettingsCommand](doc/UpdateGroupReceiptSettingsCommand.md)
  - [UpdateGroupSettingsCommand](doc/UpdateGroupSettingsCommand.md)
  - [UpdateProfileCommand](doc/UpdateProfileCommand.md)

@@ -22,6 +22,25 @@ type RoleView struct {
 	// slice and false.
 	PaidByUserGrants       []uint `json:"paidByUserGrants"`
 	IncludeOwnPaidReceipts bool   `json:"includeOwnPaidReceipts"`
+	// SeesAllMembers marks a group role whose members are exempt from member-presence
+	// isolation (they see, and are seen by, every member of an isolated group).
+	// Always group-scoped; app roles serialize false.
+	SeesAllMembers bool `json:"seesAllMembers"`
+	// SkipDefaultGroupCreation marks an app role whose new users skip the personal
+	// "My Receipts" group (the virtual "All" group is always created). Always
+	// app-scoped; group roles serialize false.
+	SkipDefaultGroupCreation bool `json:"skipDefaultGroupCreation"`
+	// RequiresIndividualCategoryGrants / RequiresIndividualTagGrants mark a group
+	// role that requires per-member category/tag assignment: a member with no
+	// individual grants sees nothing rather than the role's set. Always
+	// group-scoped; app roles serialize false.
+	RequiresIndividualCategoryGrants bool `json:"requiresIndividualCategoryGrants"`
+	RequiresIndividualTagGrants      bool `json:"requiresIndividualTagGrants"`
+	// RequireReceiptComment / RequireReceiptImage mark a group role whose members
+	// must supply at least one comment / image on the group's receipts. Always
+	// group-scoped; app roles serialize false.
+	RequireReceiptComment bool `json:"requireReceiptComment"`
+	RequireReceiptImage   bool `json:"requireReceiptImage"`
 	// ReportTemplateGrants restrict which report templates a group role's members
 	// may act on, per action. Empty means unrestricted (every template the role's
 	// group access reaches). Always group-scoped; app roles serialize an empty

@@ -1,8 +1,10 @@
 import { parseISO } from "date-fns";
 import { FormArray, FormBuilder, FormControl, FormGroup } from "@angular/forms";
+import { DEFAULT_QUICK_DATE_FIELD, ReceiptDateFilterFieldKey } from "src/constants";
 import { ReportColumn, ReportDetail, ReportPeriod, ReportRequestCommand } from "../../open-api";
 import { buildReceiptFilterForm } from "../../utils/receipt-filter";
 import { ReportColumnValue } from "./report-command.mapper";
+import { toReportPeriodDateField } from "./report-period.util";
 
 let columnIdCounter = 0;
 
@@ -26,9 +28,10 @@ export function buildReportForm(formBuilder: FormBuilder, thisContext: any): For
       preset: formBuilder.control<ReportPeriod.PresetEnum>(ReportPeriod.PresetEnum.ThisMonth),
       startDate: formBuilder.control<Date | null>(null),
       endDate: formBuilder.control<Date | null>(null),
+      dateField: formBuilder.control<ReceiptDateFilterFieldKey>(DEFAULT_QUICK_DATE_FIELD),
     }),
     filter: buildReceiptFilterForm({}, thisContext),
-    groupBy: formBuilder.array<FormControl<string>>([]),
+    groupBy: formBuilder.array<FormGroup>([]),
     detail: formBuilder.group({
       mode: formBuilder.control<ReportDetail.ModeEnum>(ReportDetail.ModeEnum.Aggregate),
       by: formBuilder.control("category"),
@@ -85,10 +88,17 @@ export function buildReportFormFromCommand(
       endDate: formBuilder.control<Date | null>(
         command.period?.endDate ? parseISO(command.period.endDate) : null
       ),
+      // A template saved before the picker existed has no date field; it always
+      // covered the receipt date, so it rehydrates to that (and a re-save writes it).
+      dateField: formBuilder.control<ReceiptDateFilterFieldKey>(
+        toReportPeriodDateField(command.period?.dateField)
+      ),
     }),
     filter: buildReceiptFilterForm(command.filter ?? {}, thisContext),
-    groupBy: formBuilder.array<FormControl<string>>(
-      (command.groupBy ?? []).map((key) => formBuilder.control(key, { nonNullable: true }))
+    groupBy: formBuilder.array<FormGroup>(
+      (command.groupBy ?? []).map((key) =>
+        buildGroupByGroup(formBuilder, key, command.groupByLabels?.[key] ?? "")
+      )
     ),
     detail: formBuilder.group({
       mode: formBuilder.control<ReportDetail.ModeEnum>(
@@ -133,6 +143,23 @@ const DEFAULT_COLUMNS: Omit<ReportColumnValue, "id">[] = [
   { kind: ReportColumn.KindEnum.Aggregate, name: "Total", label: "Total", aggFunc: ReportColumn.AggFuncEnum.Sum, measure: "amount" },
 ];
 
+/**
+ * Builds a grouping-level FormGroup. A level is `{ field, label }` rather than a
+ * bare field key because each level also renders as a leading column in the
+ * report, whose heading the user may rename. A blank label means "use the field
+ * catalog's own label", which is what the mapper omits from the request.
+ */
+export function buildGroupByGroup(
+  formBuilder: FormBuilder,
+  field: string,
+  label: string = ""
+): FormGroup {
+  return formBuilder.group({
+    field: formBuilder.control(field),
+    label: formBuilder.control(label),
+  });
+}
+
 /** Builds a column FormGroup from a column value (used by defaults and the picker). */
 export function buildColumnGroup(formBuilder: FormBuilder, column: Omit<ReportColumnValue, "id">): FormGroup {
   return formBuilder.group({
@@ -147,7 +174,12 @@ export function buildColumnGroup(formBuilder: FormBuilder, column: Omit<ReportCo
   });
 }
 
-/** Reads the scope/group-by FormArray as a plain string[] of ids/keys. */
+/** Reads the scope FormArray as a plain string[] of group ids. */
 export function readStringArray(array: FormArray): string[] {
   return array.controls.map((control) => control.value as string);
+}
+
+/** Reads the group-by FormArray as the ordered engine field keys it groups on. */
+export function readGroupByFields(array: FormArray): string[] {
+  return array.controls.map((control) => control.get("field")!.value as string);
 }

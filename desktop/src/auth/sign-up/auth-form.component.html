@@ -1,4 +1,4 @@
-@if (isLoading) {
+@if (isLoading()) {
   <div class="loading-container" @fadeInOut>
     <img src="assets/branding/loading.gif" class="loading-gif">
     <div class="loading-text">Loading...</div>
@@ -67,6 +67,9 @@
           </div>
         </div>
       </form>
+
+      <!-- Mobile app setup QR (shown only when configured in System Settings) -->
+      <app-login-qr headerText="Set up the mobile app"></app-login-qr>
     </div>
   </div>
 }

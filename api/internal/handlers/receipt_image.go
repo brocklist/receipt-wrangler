@@ -218,6 +218,15 @@ func RemoveReceiptImage(w http.ResponseWriter, r *http.Request) {
 		Writer:           w,
 		Request:          r,
 		HandlerFunction: func(w http.ResponseWriter, r *http.Request) (int, error) {
+			token := structs.GetClaims(r)
+			allowed, err := enforceImageDeleteKeepsRequired(w, token.UserId, fileData.ReceiptId, fileData.ID)
+			if err != nil {
+				return http.StatusInternalServerError, err
+			}
+			if !allowed {
+				return 0, nil
+			}
+
 			err = db.Delete(fileData).Error
 			if err != nil {
 				return http.StatusInternalServerError, err
@@ -380,17 +389,9 @@ func ConvertToJpg(w http.ResponseWriter, r *http.Request) {
 				return http.StatusInternalServerError, err
 			}
 
-			_, err = fileRepository.ValidateFileType(fileBytes)
-			if err != nil {
-				return http.StatusInternalServerError, err
-			}
-
-			jpgBytes, err := fileRepository.GetBytesFromImageBytes(fileBytes)
-			if err != nil {
-				return http.StatusInternalServerError, err
-			}
-
-			encodedString, err := fileRepository.BuildEncodedImageString(jpgBytes)
+			// The standalone ValidateFileType this replaced was redundant —
+			// GetBytesFromImageBytes calls it first and returns the same error.
+			encodedString, err := fileRepository.BuildDisplayImageString(fileBytes)
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}

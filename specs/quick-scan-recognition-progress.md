@@ -21,7 +21,7 @@ Add a RecognitionTask model/table independent of SystemTask so SystemTask retain
 
 OpenAPI in api/swagger.yml is the source contract; generate desktop and mobile clients through api/generate-client.sh, never hand-edit generated clients.
 
-- POST /api/recognitionTask: register one file before transfer. Body: clientRequestId UUID, fileName, fileSize, groupId, optional paidByUserId, status, categoryIds, tagIds. Same owner + request ID + same immutable submission fingerprint returns the original task; a mismatched fingerprint returns 409.
+- POST /api/recognitionTask: register one file before transfer. Body: clientRequestId UUID, fileName, fileSize, groupId, optional paidByUserId, status, categoryIds, tagIds and comment (subject to current group and role requirements). Same owner + request ID + same immutable submission fingerprint returns the original task; a mismatched fingerprint returns 409.
 - PUT /api/recognitionTask/{id}/file: multipart one file. Record server-received bytes at most once per second, validate the completed file, then persist dispatch-pending state before enqueue. Return the task only after server acceptance; keep dispatch-pending distinct from queued while Redis confirmation is unresolved.
 - GET /api/recognitionTask: paged list with scope (own default or all for authorized readers), bucket (active, history, all), task/client-request IDs, status and group filters. Return page data and authorization-scoped counts independent of the current page so the header remains accurate.
 - GET /api/recognitionTask/{id}: authorized task refresh.
@@ -54,6 +54,15 @@ OpenAPI in api/swagger.yml is the source contract; generate desktop and mobile c
 - Use the app's existing Chinese/English language preference. Support narrow screens and accessible status/progress announcements.
 
 ## Acceptance and validation
+
+- Main-branch integration preserves its per-file comment requirements/permissions, category/tag
+  resolution, ingest default custom fields, failed-save activity auditing and safe activity source
+  recovery. Comments participate in registration idempotency and the fenced receipt transaction.
+- After reconciling with current main, rerun complete backend/frontend checks and affected browser
+  workflows, including required and optional Quick Scan comments, before merging and pushing main.
+- Generate the mobile API's built_value serialization outputs with build_runner after OpenAPI
+  generation. Verify the new request, task, timestamps and status/stage enum serialization without
+  changing Flutter screens.
 
 - Backend: focused tests for idempotent registration/conflicting reuse, owner/group/admin visibility, revoked permissions, upload byte updates and interruption, dispatch recovery, enqueue/Redis outage, attempt fencing, retry version/generation, fallback, transaction rollback and duplicate delivery. Run Go build and the complete Go test suite.
 - Desktop: Jest tests for XHR byte events vs final response, max-two uploads, independent file failures, configuration mapping, 100%-sent/server-confirmation distinction, NGXS/service lifecycle, polling non-overlap/backoff/reconnect, permission-aware list/retry/result navigation, bilingual strings and narrow layout. Run Jest and production build.

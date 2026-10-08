@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,13 +54,15 @@ func recognitionHandlerRouter() *chi.Mux {
 	router.Put("/api/recognitionTask/{id}/file", UploadRecognitionTaskFile)
 	router.Post("/api/recognitionTask/{id}/retry", RetryRecognitionTask)
 	router.Post("/api/systemTask/rerunActivity/{id}", RerunActivity)
+	router.Get("/api/systemTask/{id}/sourceFile", GetSystemTaskSourceFile)
+	router.Get("/api/systemTask/{id}/sourceFile/download", DownloadSystemTaskSourceFile)
 	router.Post("/api/receipt/quickScan", QuickScan)
 	return router
 }
 
 func recognitionHandlerSetPermissions(t *testing.T, user, group uint, keys ...string) {
 	t.Helper()
-	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Recognition changed "+uuid.NewString(), "", keys, nil, nil, nil, false)
+	role, err := repositories.NewRoleRepository(nil).CreateGroupRole("Recognition changed "+uuid.NewString(), "", keys, nil, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +156,48 @@ func TestRecognitionHandlerRegistrationAndConflict(t *testing.T) {
 	w = recognitionHandlerJSON(t, user, "POST", "/api/recognitionTask", command)
 	if w.Code != http.StatusForbidden {
 		t.Fatal("revoked quick scan permission allowed registration")
+	}
+}
+
+func TestRecognitionHandlerQuickScanCommentContract(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		enabled, required, permission bool
+		comment, saved                string
+		status                        int
+	}{
+		{"required whitespace rejected", true, true, true, "  \n ", "", http.StatusBadRequest},
+		{"optional comment preserved", true, false, true, "  Lunch, team\n会议  ", "Lunch, team\n会议", http.StatusCreated},
+		{"disabled comment dropped", false, false, true, "incidental", "", http.StatusCreated},
+		{"missing comment permission waived", true, true, false, "incidental", "", http.StatusCreated},
+		{"oversized shown comment rejected", true, false, true, strings.Repeat("中", models.MaxCommentLength+1), "", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(repositories.TruncateTestDb)
+			user, group := seedQuickScanCommenter(t, tc.permission, models.GroupReceiptSettings{QuickScanCommentEnabled: tc.enabled, QuickScanCommentRequired: tc.required})
+			command := commands.RegisterRecognitionTaskCommand{ClientRequestId: uuid.NewString(), FileName: "receipt.jpg", FileSize: 100, GroupId: group, Comment: tc.comment}
+			w := recognitionHandlerJSON(t, user, http.MethodPost, "/api/recognitionTask", command)
+			if w.Code != tc.status {
+				t.Fatalf("registration status %d: %s", w.Code, w.Body.String())
+			}
+			var tasks []models.RecognitionTask
+			repositories.GetDB().Find(&tasks)
+			if tc.status == http.StatusCreated {
+				if len(tasks) != 1 || tasks[0].Comment != tc.saved {
+					t.Fatalf("resolved comment not persisted: %+v", tasks)
+				}
+				if strings.Contains(w.Body.String(), "Lunch") || strings.Contains(w.Body.String(), "incidental") {
+					t.Fatal("private submission comment leaked in task response")
+				}
+				command.Comment = "changed comment"
+				w = recognitionHandlerJSON(t, user, http.MethodPost, "/api/recognitionTask", command)
+				if w.Code != http.StatusConflict {
+					t.Fatalf("changed comment reused identity: %d", w.Code)
+				}
+			} else if len(tasks) != 0 {
+				t.Fatal("invalid comment registered a task")
+			}
+		})
 	}
 }
 
@@ -370,6 +415,7 @@ func TestRecognitionLegacyQuickScanEmptyResponseAndTracking(t *testing.T) {
 
 func TestRecognitionTrackedActivityRerunUsesGenerationFence(t *testing.T) {
 	user, command, file := recognitionHandlerSeed(t)
+	recognitionHandlerSetPermissions(t, user, command.GroupId, permissions.GroupReceiptsRead, permissions.GroupReceiptsQuickScan, permissions.GroupActivitiesRerun, permissions.GroupActivitiesRead)
 	recognitionHandlerRedis(t)
 	service := services.NewRecognitionTaskService()
 	task, _, err := service.Register(user, command, command.Fingerprint())
@@ -402,6 +448,15 @@ func TestRecognitionTrackedActivityRerunUsesGenerationFence(t *testing.T) {
 	if err = repositories.GetDB().Create(&audit).Error; err != nil {
 		t.Fatal(err)
 	}
+	sourcePath := fmt.Sprintf("/api/systemTask/%d/sourceFile", audit.ID)
+	source := recognitionHandlerJSON(t, user, http.MethodGet, sourcePath, nil)
+	if source.Code != http.StatusOK || !strings.Contains(source.Body.String(), "receipt.jpg") || !strings.Contains(source.Body.String(), "data:image/") {
+		t.Fatalf("durable activity preview failed: %d %s", source.Code, source.Body.String())
+	}
+	source = recognitionHandlerJSON(t, user, http.MethodGet, sourcePath+"/download", nil)
+	if source.Code != http.StatusOK || !bytes.Equal(source.Body.Bytes(), file) {
+		t.Fatalf("durable activity download changed bytes: %d", source.Code)
+	}
 	path := fmt.Sprintf("/api/systemTask/rerunActivity/%d", audit.ID)
 	w := recognitionHandlerJSON(t, user, "POST", path, nil)
 	if w.Code != 200 {
@@ -411,6 +466,10 @@ func TestRecognitionTrackedActivityRerunUsesGenerationFence(t *testing.T) {
 	defer inspector.DeleteTask(string(models.QuickScanQueue), after.AsynqTaskId)
 	if after.Generation != task.Generation+1 || after.Status != models.RecognitionQueued {
 		t.Fatal("activity did not use recognition retry")
+	}
+	source = recognitionHandlerJSON(t, user, http.MethodGet, sourcePath+"/download", nil)
+	if source.Code != http.StatusNotFound {
+		t.Fatalf("old activity generation exposed current upload: %d", source.Code)
 	}
 	w = recognitionHandlerJSON(t, user, "POST", path, nil)
 	if w.Code != 409 {

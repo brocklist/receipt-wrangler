@@ -67,6 +67,16 @@ func CreateRecognitionTask(w http.ResponseWriter, r *http.Request) {
 		recognitionError(w, services.ErrRecognitionForbidden)
 		return
 	}
+	isAllGroup, err := isAllGroupDestination(command.GroupId)
+	if err != nil {
+		recognitionError(w, err)
+		return
+	}
+	if isAllGroup {
+		utils.WriteCustomErrorResponse(w, allGroupCreateMessage, http.StatusBadRequest)
+		return
+	}
+	command.Comment = strings.TrimSpace(command.Comment)
 	fingerprint := command.Fingerprint()
 	// Replay compares the submitted values before resolving today's defaults.
 	// A changed group default must not turn an ambiguous response into a new job.
@@ -87,8 +97,8 @@ func CreateRecognitionTask(w http.ResponseWriter, r *http.Request) {
 		recognitionError(w, err)
 		return
 	}
-	quick := commands.QuickScanCommand{Files: []multipart.File{nil}, GroupIds: []uint{command.GroupId}, PaidByUserIds: []uint{command.PaidByUserId}, Statuses: []models.ReceiptStatus{command.Status}, CategoryIds: [][]uint{command.CategoryIds}, TagIds: [][]uint{command.TagIds}}
-	resolved, v, err := resolveQuickScanFields(quick, user)
+	quick := commands.QuickScanCommand{Files: []multipart.File{nil}, GroupIds: []uint{command.GroupId}, PaidByUserIds: []uint{command.PaidByUserId}, Statuses: []models.ReceiptStatus{command.Status}, CategoryIds: [][]uint{command.CategoryIds}, TagIds: [][]uint{command.TagIds}, Comments: []string{command.Comment}}
+	resolved, v, err := services.NewReceiptService(nil).ResolveQuickScanFields(quick, user)
 	if err != nil {
 		recognitionError(w, err)
 		return
@@ -108,6 +118,7 @@ func CreateRecognitionTask(w http.ResponseWriter, r *http.Request) {
 	}
 	command.PaidByUserId, command.Status = resolved[0].PaidByUserId, resolved[0].Status
 	command.CategoryIds, command.TagIds = resolved[0].CategoryIds, resolved[0].TagIds
+	command.Comment = resolved[0].Comment
 	task, created, err := service.Register(user, command, fingerprint)
 	if err != nil {
 		recognitionError(w, err)

@@ -191,8 +191,78 @@
           }
         </div>
 
+        <!-- Personal group creation (app roles only) -->
+        @if (showAppOptions()) {
+          <div class="rw-card rw-form-section">
+            <div class="rw-perm-header">
+              <div>
+                <h2>Group creation</h2>
+                <div class="hint hint-inline">
+                  New users normally get their own "My Receipts" group. Turn this
+                  on for roles whose users should only belong to the groups you
+                  add them to.
+                </div>
+              </div>
+            </div>
+
+            <app-checkbox
+              data-testid="skip-default-group"
+              label="Don't create a personal group for new users with this role"
+              [inputFormControl]="form | formGet: 'skipDefaultGroupCreation'"
+              [readonly]="isViewMode()"
+            ></app-checkbox>
+          </div>
+        }
+
         <!-- Category & tag grants (group roles only) -->
         @if (showGrants()) {
+          <div class="rw-card rw-form-section">
+            <div class="rw-perm-header">
+              <div>
+                <h2>Member visibility</h2>
+                <div class="hint hint-inline">
+                  In an isolated group, members can't see each other. Turn this
+                  on so holders of this role can see, and be seen by, all
+                  members.
+                </div>
+              </div>
+            </div>
+
+            <app-checkbox
+              data-testid="sees-all-members"
+              label="Members with this role can see, and be seen by, all members"
+              [inputFormControl]="form | formGet: 'seesAllMembers'"
+              [readonly]="isViewMode()"
+            ></app-checkbox>
+          </div>
+
+          <div class="rw-card rw-form-section">
+            <div class="rw-perm-header">
+              <div>
+                <h2>Receipt requirements</h2>
+                <div class="hint hint-inline">
+                  Members with this role must keep at least one comment or image
+                  on the group's receipts. Not enforced when the group hides
+                  that field.
+                </div>
+              </div>
+            </div>
+
+            <app-checkbox
+              data-testid="require-receipt-comment"
+              label="Require a comment on receipts"
+              [inputFormControl]="form | formGet: 'requireReceiptComment'"
+              [readonly]="isViewMode()"
+            ></app-checkbox>
+
+            <app-checkbox
+              data-testid="require-receipt-image"
+              label="Require an image on receipts"
+              [inputFormControl]="form | formGet: 'requireReceiptImage'"
+              [readonly]="isViewMode()"
+            ></app-checkbox>
+          </div>
+
           <div class="rw-card rw-form-section">
             <div class="rw-perm-header">
               <div>
@@ -204,21 +274,31 @@
               </div>
             </div>
 
-            <app-category-autocomplete
-              class="w-100"
-              [inputFormControl]="$any(grantedCategories)"
-              [categories]="categoryPool()"
-              [creatable]="false"
+            <app-grant-picker
+              [categoryPool]="categoryPool()"
+              [tagPool]="tagPool()"
+              [selectedCategoryIds]="pendingCategoryGrantIds()"
+              [selectedTagIds]="pendingTagGrantIds()"
               [readonly]="isViewMode()"
-            ></app-category-autocomplete>
+              (grantsChange)="onGrantsChange($event)"
+            ></app-grant-picker>
 
-            <app-tag-autocomplete
-              class="w-100"
-              [inputFormControl]="$any(grantedTags)"
-              [tags]="tagPool()"
-              [creatable]="false"
+            <app-checkbox
+              label="Require an individual category assignment for each member"
+              [inputFormControl]="form | formGet: 'requiresIndividualCategoryGrants'"
               [readonly]="isViewMode()"
-            ></app-tag-autocomplete>
+            ></app-checkbox>
+            <div class="hint hint-inline">
+              When on, a member of this role who has not been individually assigned
+              categories sees none at all, instead of everything above. Use this so a
+              newly added member is never exposed to categories by default.
+            </div>
+
+            <app-checkbox
+              label="Require an individual tag assignment for each member"
+              [inputFormControl]="form | formGet: 'requiresIndividualTagGrants'"
+              [readonly]="isViewMode()"
+            ></app-checkbox>
           </div>
 
           <div class="rw-card rw-form-section">

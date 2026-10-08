@@ -14,11 +14,39 @@ type GroupRoleDefinition struct {
 	IsDefault   bool   `gorm:"not null;default:false" json:"isDefault"`
 	IsSystem    bool   `gorm:"not null;default:false" json:"isSystem"`
 
+	// SeesAllMembers is the "supervisor" exemption for member isolation (see
+	// Group.IsolateMembers): holders of this group role can see every member of an
+	// isolated group AND are visible to every member (so an isolated member can still
+	// see and transact with their coordinator). Only meaningful in an isolated group;
+	// default false ⇒ no effect on existing roles/groups.
+	SeesAllMembers bool `gorm:"not null;default:false" json:"seesAllMembers"`
+
+	// RequiresIndividualCategoryGrants makes per-member category assignment
+	// MANDATORY for this role: a member holding it who has no individual category
+	// grants sees NOTHING, rather than falling back to the role's set (or to
+	// see-all when the role grants nothing). It exists so that forgetting to assign
+	// a newly added member fails closed instead of exposing every category.
+	// Defaults false, so every existing role behaves exactly as before.
+	RequiresIndividualCategoryGrants bool `gorm:"not null;default:false" json:"requiresIndividualCategoryGrants"`
+
+	// RequiresIndividualTagGrants is the tag counterpart of
+	// RequiresIndividualCategoryGrants.
+	RequiresIndividualTagGrants bool `gorm:"not null;default:false" json:"requiresIndividualTagGrants"`
+
 	// IncludeOwnPaidReceipts is the relative "their own receipts" token of the
 	// paid-by visibility filter: when true the role lets each member see receipts
 	// they paid for. It is stored separately from PaidByUserGrants because it
 	// resolves to the current member at query time rather than a fixed user id.
 	IncludeOwnPaidReceipts bool `gorm:"not null;default:false" json:"includeOwnPaidReceipts"`
+
+	// RequireReceiptComment / RequireReceiptImage make a member holding this role
+	// supply at least one comment / image on the group's receipts, enforced on
+	// create, update and on deleting the last one. The raw flags are waived per
+	// group (hidden comments/images, no group.comments.create) — resolve them
+	// through ReceiptService.ResolveReceiptRequirements, never read them directly.
+	// Default false ⇒ no effect on existing roles.
+	RequireReceiptComment bool `gorm:"not null;default:false" json:"requireReceiptComment"`
+	RequireReceiptImage   bool `gorm:"not null;default:false" json:"requireReceiptImage"`
 
 	// PaidByVisibilityRestricted records whether the admin opted into paid-by
 	// filtering at all (any specific user grant OR include-own). It is what keeps a

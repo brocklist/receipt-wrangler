@@ -31,6 +31,11 @@ part 'upsert_system_settings_command.g.dart';
 /// * [taskQueueConfigurations] 
 /// * [mcpEnabled] - Whether the OAuth 2.1-protected MCP server is enabled
 /// * [mcpPublicUrl] - Externally reachable origin used for MCP OAuth/metadata/redirect URLs and token audience
+/// * [showLoginQr] - Whether to show the mobile-setup QR code on the desktop login page
+/// * [mobileServerUrl] - Server/API URL mobile clients connect to; encoded into the login QR's deep link
+/// * [refreshTokenValidForHours] - How long a refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged.
+/// * [mcpRefreshTokenValidForHours] - How long an MCP/OAuth connector refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged.
+/// * [tempFileRetentionHours] - How long a temp file is kept once nothing can still act on it, in hours. Accepted values are 24-8760 (1 year), or 0 meaning unset, which falls back to the default of 720 (30 days). Omit the key entirely to leave the currently configured value unchanged.
 @BuiltValue()
 abstract class UpsertSystemSettingsCommand implements Built<UpsertSystemSettingsCommand, UpsertSystemSettingsCommandBuilder> {
   /// Whether local sign up is enabled
@@ -94,6 +99,26 @@ abstract class UpsertSystemSettingsCommand implements Built<UpsertSystemSettings
   /// Externally reachable origin used for MCP OAuth/metadata/redirect URLs and token audience
   @BuiltValueField(wireName: r'mcpPublicUrl')
   String? get mcpPublicUrl;
+
+  /// Whether to show the mobile-setup QR code on the desktop login page
+  @BuiltValueField(wireName: r'showLoginQr')
+  bool? get showLoginQr;
+
+  /// Server/API URL mobile clients connect to; encoded into the login QR's deep link
+  @BuiltValueField(wireName: r'mobileServerUrl')
+  String? get mobileServerUrl;
+
+  /// How long a refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged.
+  @BuiltValueField(wireName: r'refreshTokenValidForHours')
+  int? get refreshTokenValidForHours;
+
+  /// How long an MCP/OAuth connector refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged.
+  @BuiltValueField(wireName: r'mcpRefreshTokenValidForHours')
+  int? get mcpRefreshTokenValidForHours;
+
+  /// How long a temp file is kept once nothing can still act on it, in hours. Accepted values are 24-8760 (1 year), or 0 meaning unset, which falls back to the default of 720 (30 days). Omit the key entirely to leave the currently configured value unchanged.
+  @BuiltValueField(wireName: r'tempFileRetentionHours')
+  int? get tempFileRetentionHours;
 
   UpsertSystemSettingsCommand._();
 
@@ -219,6 +244,41 @@ class _$UpsertSystemSettingsCommandSerializer implements PrimitiveSerializer<Ups
       yield serializers.serialize(
         object.mcpPublicUrl,
         specifiedType: const FullType(String),
+      );
+    }
+    if (object.showLoginQr != null) {
+      yield r'showLoginQr';
+      yield serializers.serialize(
+        object.showLoginQr,
+        specifiedType: const FullType(bool),
+      );
+    }
+    if (object.mobileServerUrl != null) {
+      yield r'mobileServerUrl';
+      yield serializers.serialize(
+        object.mobileServerUrl,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.refreshTokenValidForHours != null) {
+      yield r'refreshTokenValidForHours';
+      yield serializers.serialize(
+        object.refreshTokenValidForHours,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.mcpRefreshTokenValidForHours != null) {
+      yield r'mcpRefreshTokenValidForHours';
+      yield serializers.serialize(
+        object.mcpRefreshTokenValidForHours,
+        specifiedType: const FullType(int),
+      );
+    }
+    if (object.tempFileRetentionHours != null) {
+      yield r'tempFileRetentionHours';
+      yield serializers.serialize(
+        object.tempFileRetentionHours,
+        specifiedType: const FullType(int),
       );
     }
   }
@@ -355,6 +415,41 @@ class _$UpsertSystemSettingsCommandSerializer implements PrimitiveSerializer<Ups
             specifiedType: const FullType(String),
           ) as String;
           result.mcpPublicUrl = valueDes;
+          break;
+        case r'showLoginQr':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.showLoginQr = valueDes;
+          break;
+        case r'mobileServerUrl':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.mobileServerUrl = valueDes;
+          break;
+        case r'refreshTokenValidForHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.refreshTokenValidForHours = valueDes;
+          break;
+        case r'mcpRefreshTokenValidForHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.mcpRefreshTokenValidForHours = valueDes;
+          break;
+        case r'tempFileRetentionHours':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.tempFileRetentionHours = valueDes;
           break;
         default:
           unhandled.add(key);

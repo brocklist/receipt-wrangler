@@ -23,6 +23,7 @@ type RegisterRecognitionTaskCommand struct {
 	Status          models.ReceiptStatus `json:"status"`
 	CategoryIds     []uint               `json:"categoryIds"`
 	TagIds          []uint               `json:"tagIds"`
+	Comment         string               `json:"comment,omitempty"`
 }
 
 func (c RegisterRecognitionTaskCommand) Validate() structs.ValidatorError {

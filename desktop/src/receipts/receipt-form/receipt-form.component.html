@@ -25,7 +25,11 @@
         ></app-audit-detail-section>
       </ng-container>
       <div class="row">
-        <app-form-section class="col" headerText="Details" [indent]="false">
+        <app-form-section
+          class="col-12 col-md"
+          headerText="Details"
+          [indent]="false"
+        >
           <div
             class="d-flex flex-column justify-content-center align-items-center"
           >
@@ -54,6 +58,7 @@
             @if (!this.selectedGroup()?.groupReceiptSettings?.hideReceiptCategories) {
               <app-category-autocomplete
                 class="w-100"
+                data-testid="receipt-categories"
                 [inputFormControl]="form | formGet : 'categories'"
                 [categories]="categories"
                 [creatable]="canCreateCategories()"
@@ -77,6 +82,7 @@
             ></app-datepicker>
             <app-group-autocomplete
               class="w-100"
+              data-testid="receipt-group"
               [inputFormControl]="form | formGet : 'groupId'"
               [readonly]="mode | inputReadonly"
             >
@@ -110,27 +116,33 @@
         </app-form-section>
         @if (!selectedGroup()?.groupReceiptSettings?.hideImages) {
           <app-form-section
-            class="col h-100"
+            class="col-12 col-md rw-images-pane"
             headerText="Images"
             [headerButtonsTemplate]="imagesSectionHeaderButtons"
             [indent]="false"
           >
-            <div class="w-100 h-100">
+            <div class="w-100 h-100 rw-images-pane__content">
               <app-upload-image
-                class="w-100 h-100"
+                class="w-100"
                 [receiptId]="originalReceipt?.id?.toString()"
                 (fileLoaded)="imageFileLoaded($event)"
               >
               </app-upload-image>
+              @if (isImageMissing()) {
+                <div
+                  class="rw-requirement-hint"
+                  data-testid="receipt-image-required-hint"
+                >
+                  Your role requires at least one image on this group's receipts.
+                </div>
+              }
               <div
+                class="rw-images-pane__stage"
                 *ngIf="
                 images() &&
                 (images().length > 0 || filesToUpload().length > 0) &&
                 showImages
               "
-                [ngClass]="{
-              'col-3': !showLargeImagePreview
-              }"
               >
                 <ng-container *ngIf="imagesLoading()">
                   <div class="d-flex justify-content-center align-items-center">
@@ -138,10 +150,12 @@
                   </div>
                 </ng-container>
                 <app-carousel
+                  class="rw-carousel--fill"
                   [images]="images()"
                   [imagePreviews]="filesToUpload()"
                   [mode]="mode"
                   [hideButtonControls]="true"
+                  stageHeight="100%"
                   [disabled]="
                   mode !== formMode.edit || (showProgressBar() ?? false)
                 "
@@ -189,13 +203,28 @@
             headerText="Comments"
             [indent]="false"
           >
-            <app-receipt-comments
-              [receiptId]="originalReceipt?.id"
-              [groupId]="originalReceipt?.groupId"
-              [comments]="originalReceipt?.comments ?? []"
-              [mode]="mode"
-              (commentsUpdated)="updateComments($event)"
-            ></app-receipt-comments>
+            @if (isCommentMissing()) {
+              <div
+                class="rw-requirement-hint mb-2"
+                data-testid="receipt-comment-required-hint"
+              >
+                Your role requires at least one comment on this group's receipts.
+              </div>
+            }
+            <!-- Keyed on the receipt id: the queue re-uses this form for the next
+                 receipt, and the comments child only reads its inputs on init, so
+                 without a fresh instance it would keep the previous receipt's
+                 comments (and the required-comment check would count them). -->
+            @for (receipt of [originalReceipt]; track receipt?.id) {
+              <app-receipt-comments
+                [receiptId]="receipt?.id"
+                [groupId]="receipt?.groupId"
+                [comments]="receipt?.comments ?? []"
+                [mode]="mode"
+                [preventDeletingLastComment]="isCommentDeletionLimited()"
+                (commentsUpdated)="updateComments($event)"
+              ></app-receipt-comments>
+            }
           </app-form-section>
         </div>
       }
@@ -285,6 +314,7 @@
   ></app-button>
   @if (canManageCustomFields()) {
     <app-filtered-stateful-menu
+      data-testid="receipt-manage-custom-fields"
       filterLabel="Filter custom fields"
       matButtonType="iconButton"
       icon="list_alt"
@@ -299,6 +329,7 @@
   <app-button
     *ngIf="mode | inputReadonly"
     class="ms-1"
+    data-testid="receipt-duplicate"
     color="accent"
     matButtonType="iconButton"
     tooltip="Duplicate"
@@ -378,14 +409,6 @@
     ></app-button>
     <app-button
       matButtonType="iconButton"
-      color="accent"
-      [icon]="showLargeImagePreview ? 'unfold_less' : 'unfold_more'"
-      [tooltip]="showLargeImagePreview ? 'Collapse Image' : 'Expand Image'"
-      [disabled]="(showProgressBar() ?? false)"
-      (clicked)="toggleImagePreviewSize()"
-    ></app-button>
-    <app-button
-      matButtonType="iconButton"
       icon="fullscreen"
       tooltip="Show Fullscreen Image"
       color="accent"
@@ -426,21 +449,34 @@
     *ngIf="
       !(mode | inputReadonly) && (images().length > 0 || filesToUpload().length > 0)
     "
+    data-testid="receipt-image-remove"
     matButtonType="iconButton"
     icon="delete"
-    tooltip="Remove Image"
+    [tooltip]="isLastImageLocked() ? 'An image is required, so the last one cannot be removed' : 'Remove Image'"
     color="warn"
-    [disabled]="!canEditReceipt() || (showProgressBar() ?? false)"
+    [disabled]="!canEditReceipt() || isLastImageLocked() || (showProgressBar() ?? false)"
     (clicked)="removeImage()"
   ></app-button>
 </ng-template>
 
 <ng-template #expandedImageTemplate>
-  <app-carousel
-    [images]="images()"
-    [imagePreviews]="filesToUpload()"
-    [mode]="mode"
-    [hideButtonControls]="true"
-    [initialIndex]="carouselComponent().currentlyShownImageIndex"
-  ></app-carousel>
+  <div class="rw-image-dialog">
+    <app-button
+      class="rw-image-dialog__close"
+      data-testid="receipt-image-fullscreen-close"
+      matButtonType="iconButton"
+      icon="close"
+      tooltip="Close"
+      (clicked)="closeExpandedImage()"
+    ></app-button>
+    <app-carousel
+      class="rw-carousel--fill"
+      [images]="images()"
+      [imagePreviews]="filesToUpload()"
+      [mode]="mode"
+      [hideButtonControls]="true"
+      stageHeight="100%"
+      [initialIndex]="currentImageIndex"
+    ></app-carousel>
+  </div>
 </ng-template>

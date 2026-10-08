@@ -306,6 +306,7 @@ describe("RoleFormComponent", () => {
       description: "Runs the app",
       scope: "APP",
       permissions: ["app.users.create"],
+      skipDefaultGroupCreation: false,
     });
   });
 
@@ -334,9 +335,9 @@ describe("RoleFormComponent", () => {
     component.form.controls.name.setValue("Restricted Role");
     component.toggle("group.receipts.read");
 
-    // The autocomplete drives these FormArrays; push selected grants directly.
-    component.grantedCategories.push(new FormControl({ id: 10, name: "Groceries" } as any));
-    component.grantedTags.push(new FormControl({ id: 20, name: "Reimbursable" } as any));
+    // The shared app-grant-picker owns the autocomplete FormArrays and reports its
+    // selection back through (grantsChange); emulate that here.
+    component.onGrantsChange({ categoryIds: [10], tagIds: [20] });
 
     component.submit();
 
@@ -359,11 +360,28 @@ describe("RoleFormComponent", () => {
   it("resets grants when switching role type", async () => {
     const { component } = await setup();
     component.pickType("group");
-    component.grantedCategories.push(new FormControl({ id: 10, name: "Groceries" } as any));
-    expect(component.grantedCategories.length).toBe(1);
+    component.onGrantsChange({ categoryIds: [10], tagIds: [20] });
+    expect(component.grantSelection().categoryIds).toEqual([10]);
 
     component.pickType("app");
-    expect(component.grantedCategories.length).toBe(0);
+    expect(component.grantSelection().categoryIds).toEqual([]);
+    expect(component.grantSelection().tagIds).toEqual([]);
+  });
+
+  it("keeps a loaded role's grants when the picker is never touched", async () => {
+    // The picker seeds itself silently (emitEvent: false), so it reports nothing
+    // on load. A save that read only picker emissions would wipe the role's grants.
+    const { component } = await setup();
+    component.pickType("group");
+    component.pendingCategoryGrantIds.set([7]);
+    component.pendingTagGrantIds.set([8]);
+
+    component.form.controls.name.setValue("Untouched Role");
+    component.toggle("group.receipts.read");
+    component.submit();
+
+    expect(component.lastPayload?.categoryGrants).toEqual([7]);
+    expect(component.lastPayload?.tagGrants).toEqual([8]);
   });
 
   it("includes paid-by grants and includeOwn in a GROUP payload", async () => {
@@ -418,6 +436,150 @@ describe("RoleFormComponent", () => {
 
     component.pickType("app");
     expect(component.grantedPaidByUsers.length).toBe(0);
+  });
+
+  it("includes seesAllMembers in a GROUP payload when enabled", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.name.setValue("Supervisor Role");
+    component.toggle("group.receipts.read");
+    component.form.controls.seesAllMembers.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.scope).toBe("GROUP");
+    expect(component.lastPayload?.seesAllMembers).toBe(true);
+  });
+
+  it("defaults seesAllMembers to false in a GROUP payload", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.name.setValue("Plain Group Role");
+    component.toggle("group.receipts.read");
+
+    component.submit();
+
+    expect(component.lastPayload?.seesAllMembers).toBe(false);
+  });
+
+  it("omits seesAllMembers from an APP payload", async () => {
+    const { component } = await setup();
+    component.form.controls.name.setValue("App Role");
+    component.toggle("app.users.read");
+    // Even if the control somehow held true, an app payload must not carry it.
+    component.form.controls.seesAllMembers.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.seesAllMembers).toBeUndefined();
+  });
+
+  it("resets seesAllMembers when switching role type", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.seesAllMembers.setValue(true);
+
+    component.pickType("app");
+    expect(component.form.controls.seesAllMembers.value).toBe(false);
+  });
+
+  it("includes the receipt requirements in a GROUP payload", async () => {
+    const { component, fixture } = await setup();
+    component.pickType("group");
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[data-testid="require-receipt-comment"]')).toBeTruthy();
+    expect(fixture.nativeElement.querySelector('[data-testid="require-receipt-image"]')).toBeTruthy();
+
+    component.form.controls.name.setValue("Strict Role");
+    component.toggle("group.receipts.read");
+    component.form.controls.requireReceiptComment.setValue(true);
+    component.form.controls.requireReceiptImage.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.requireReceiptComment).toBe(true);
+    expect(component.lastPayload?.requireReceiptImage).toBe(true);
+  });
+
+  it("defaults the receipt requirements to false in a GROUP payload", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.name.setValue("Plain Group Role");
+    component.toggle("group.receipts.read");
+
+    component.submit();
+
+    expect(component.lastPayload?.requireReceiptComment).toBe(false);
+    expect(component.lastPayload?.requireReceiptImage).toBe(false);
+  });
+
+  it("omits the receipt requirements from an APP payload and hides the controls", async () => {
+    const { component, fixture } = await setup();
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('[data-testid="require-receipt-comment"]')).toBeNull();
+    component.form.controls.name.setValue("App Role");
+    component.toggle("app.users.read");
+    component.form.controls.requireReceiptComment.setValue(true);
+    component.form.controls.requireReceiptImage.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.requireReceiptComment).toBeUndefined();
+    expect(component.lastPayload?.requireReceiptImage).toBeUndefined();
+  });
+
+  it("resets the receipt requirements when switching role type", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.requireReceiptComment.setValue(true);
+    component.form.controls.requireReceiptImage.setValue(true);
+
+    component.pickType("app");
+    expect(component.form.controls.requireReceiptComment.value).toBe(false);
+    expect(component.form.controls.requireReceiptImage.value).toBe(false);
+  });
+
+  it("includes skipDefaultGroupCreation in an APP payload when enabled", async () => {
+    const { component } = await setup();
+    component.form.controls.name.setValue("Restricted App Role");
+    component.toggle("app.users.read");
+    component.form.controls.skipDefaultGroupCreation.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.scope).toBe("APP");
+    expect(component.lastPayload?.skipDefaultGroupCreation).toBe(true);
+  });
+
+  it("defaults skipDefaultGroupCreation to false in an APP payload", async () => {
+    const { component } = await setup();
+    component.form.controls.name.setValue("Plain App Role");
+    component.toggle("app.users.read");
+
+    component.submit();
+
+    expect(component.lastPayload?.skipDefaultGroupCreation).toBe(false);
+  });
+
+  it("omits skipDefaultGroupCreation from a GROUP payload", async () => {
+    const { component } = await setup();
+    component.pickType("group");
+    component.form.controls.name.setValue("Group Role");
+    component.toggle("group.receipts.read");
+    // Even if the control somehow held true, a group payload must not carry it.
+    component.form.controls.skipDefaultGroupCreation.setValue(true);
+
+    component.submit();
+
+    expect(component.lastPayload?.skipDefaultGroupCreation).toBeUndefined();
+  });
+
+  it("resets skipDefaultGroupCreation when switching role type", async () => {
+    const { component } = await setup();
+    component.form.controls.skipDefaultGroupCreation.setValue(true);
+
+    component.pickType("group");
+    expect(component.form.controls.skipDefaultGroupCreation.value).toBe(false);
   });
 
   it("includes report template grants in a GROUP payload", async () => {
@@ -496,6 +658,7 @@ describe("RoleFormComponent", () => {
       description: "",
       scope: "APP",
       permissions: ["app.users.create"],
+      skipDefaultGroupCreation: false,
     });
     expect(snackbar.success).toHaveBeenCalled();
     expect(navigateSpy).toHaveBeenCalledWith(["/roles"]);
@@ -561,6 +724,7 @@ describe("RoleFormComponent", () => {
         description: "Manages the app",
         scope: "APP",
         permissions: ["app.users.create", "app.users.read"],
+        skipDefaultGroupCreation: false,
       });
       expect(snackbar.success).toHaveBeenCalled();
       expect(navigateSpy).toHaveBeenCalledWith(["/roles"]);
@@ -609,6 +773,65 @@ describe("RoleFormComponent", () => {
         .map((option) => option.id)
         .sort((a, b) => a - b);
       expect(selectedIds).toEqual([RoleFormComponent.OWN_PAID_RECEIPTS_OPTION_ID, 42].sort((a, b) => a - b));
+    });
+
+    it("rehydrates seesAllMembers on edit", async () => {
+      const seesAllGroupRole: Role = {
+        id: 13,
+        name: "Supervisor Group Role",
+        scope: "GROUP",
+        isDefault: false,
+        isSystem: false,
+        permissions: ["group.receipts.read"],
+        seesAllMembers: true,
+      };
+      const { component } = await setup(ALL_DESCRIPTORS, {
+        routeId: "13",
+        routeScope: "group",
+        roles: [seesAllGroupRole],
+      });
+
+      expect(component.form.controls.seesAllMembers.value).toBe(true);
+    });
+
+    it("rehydrates the receipt requirements on edit", async () => {
+      const strictGroupRole: Role = {
+        id: 15,
+        name: "Strict Group Role",
+        scope: "GROUP",
+        isDefault: false,
+        isSystem: false,
+        permissions: ["group.receipts.read"],
+        requireReceiptComment: true,
+        requireReceiptImage: true,
+      };
+      const { component } = await setup(ALL_DESCRIPTORS, {
+        routeId: "15",
+        routeScope: "group",
+        roles: [strictGroupRole],
+      });
+
+      expect(component.form.controls.requireReceiptComment.value).toBe(true);
+      expect(component.form.controls.requireReceiptImage.value).toBe(true);
+    });
+
+    it("rehydrates skipDefaultGroupCreation on edit", async () => {
+      const restrictedAppRole: Role = {
+        id: 14,
+        name: "Restricted App Role",
+        scope: "APP",
+        isDefault: false,
+        isSystem: false,
+        permissions: ["app.users.read"],
+        skipDefaultGroupCreation: true,
+      };
+      const { component } = await setup(ALL_DESCRIPTORS, {
+        routeId: "14",
+        routeScope: "app",
+        roles: [restrictedAppRole],
+      });
+
+      expect(component.form.controls.skipDefaultGroupCreation.value).toBe(true);
     });
 
     it("rehydrates report template grants on edit", async () => {

@@ -8,6 +8,7 @@ import (
 	"receipt-wrangler/api/internal/commands"
 	"receipt-wrangler/api/internal/constants"
 	"receipt-wrangler/api/internal/models"
+	"receipt-wrangler/api/internal/reporting/receiptsource"
 	"receipt-wrangler/api/internal/utils"
 	"time"
 
@@ -70,6 +71,18 @@ func (repository ReceiptRepository) BeforeUpdateReceipt(currentReceipt models.Re
 	return nil
 }
 
+// ReceiptUpdateDescriptionVersion marks the format of a RECEIPT_UPDATED
+// system task's description, stored under its "version" key. The desktop reads
+// it to decide how far to trust the "before" snapshot:
+//
+//   - 1 (no "version" key): "before" was loaded one level deep, so it lacks
+//     item categories/tags/linked items and custom field definitions, and it
+//     lists linked items as top-level items.
+//   - 2: "before" is loaded with GetFullyLoadedReceiptById, like "after".
+//
+// Bump it whenever the snapshot format changes.
+const ReceiptUpdateDescriptionVersion = 2
+
 func createFailedUpdateSystemTask(command commands.UpsertSystemTaskCommand, err error) {
 	endedAt := time.Now()
 	command.EndedAt = &endedAt
@@ -120,7 +133,18 @@ func (repository ReceiptRepository) UpdateReceipt(id string, command commands.Up
 	// NOTE: ID and field used for afterReceiptUpdated
 	updatedReceipt.ID = currentReceipt.ID
 	updatedReceipt.ResolvedDate = currentReceipt.ResolvedDate
-	before, err := currentReceipt.ToString()
+
+	// The "before" snapshot uses the same loader as "after" below, so the two
+	// sides of the system task diff are loaded to the same depth. currentReceipt
+	// only preloads one level (no item categories/tags/linked items, no custom
+	// field definitions, linked items not yet filtered out), which would make
+	// every update look like it changed those.
+	beforeReceipt, err := repository.GetFullyLoadedReceiptById(id)
+	if err != nil {
+		createFailedUpdateSystemTask(systemTask, err)
+		return models.Receipt{}, err
+	}
+	before, err := beforeReceipt.ToString()
 	if err != nil {
 		createFailedUpdateSystemTask(systemTask, err)
 		return models.Receipt{}, err
@@ -216,6 +240,7 @@ func (repository ReceiptRepository) UpdateReceipt(id string, command commands.Up
 	}
 
 	systemTaskResultDescription["after"] = after
+	systemTaskResultDescription["version"] = ReceiptUpdateDescriptionVersion
 	endedAt = time.Now()
 	systemTask.EndedAt = &endedAt
 
@@ -286,7 +311,10 @@ func (repository ReceiptRepository) AfterReceiptUpdated(updatedReceipt *models.R
 		return err
 	}
 
-	if updatedReceipt.Status == models.RESOLVED && updatedReceipt.ID > 0 {
+	// RESOLVED and DECLINED are both terminal: the receipt is done being argued about, so its
+	// items are settled and stop counting toward what members owe each other. Only RESOLVED
+	// stamps resolved_date above — a decline is not a resolution, and reports expose that column.
+	if (updatedReceipt.Status == models.RESOLVED || updatedReceipt.Status == models.DECLINED) && updatedReceipt.ID > 0 {
 		err := repository.UpdateItemsToStatus(updatedReceipt, models.ITEM_RESOLVED)
 		if err != nil {
 			return err
@@ -456,8 +484,11 @@ func (repository ReceiptRepository) CreateReceipt(
 		notificationRepository.ClearTransaction()
 		return nil
 	})
+	// Only record the failure when this call owns the upload task. Quick scan and
+	// email pass false because they record their own, failure included, as a child
+	// of the task that ran them.
 	if err != nil {
-		if !createSystemTask {
+		if createSystemTask {
 			createFailedUpdateSystemTask(systemTask, err)
 		}
 		return models.Receipt{}, err
@@ -465,7 +496,7 @@ func (repository ReceiptRepository) CreateReceipt(
 
 	fullyLoadedReceipt, err := repository.GetFullyLoadedReceiptById(utils.UintToString(receipt.ID))
 	if err != nil {
-		if !createSystemTask {
+		if createSystemTask {
 			createFailedUpdateSystemTask(systemTask, err)
 		}
 		return models.Receipt{}, err
@@ -476,7 +507,7 @@ func (repository ReceiptRepository) CreateReceipt(
 	// a clear failure here instead of a downstream foreign key violation.
 	if fullyLoadedReceipt.ID == 0 {
 		err = fmt.Errorf("created receipt %s could not be reloaded", utils.UintToString(receipt.ID))
-		if !createSystemTask {
+		if createSystemTask {
 			createFailedUpdateSystemTask(systemTask, err)
 		}
 		return models.Receipt{}, err
@@ -524,12 +555,47 @@ func (repository ReceiptRepository) GetReceiptById(receiptId string) (models.Rec
 // callers).
 type PaidByAllowedResolver func(groupId uint) (allowedUserIds []uint, unrestricted bool, err error)
 
+// CommentAuthorVisibilityResolver returns the comment authors a user may see in a
+// group under member isolation, or unrestricted == true (see every author). It is
+// what keeps a sort by first comment from ordering receipts by a comment the
+// caller is never shown. Pass nil to GetPagedReceiptsByGroupId to skip it
+// (internal/system callers), exactly like a nil PaidByAllowedResolver.
+type CommentAuthorVisibilityResolver func(groupId uint) (visibleUserIds []uint, unrestricted bool, err error)
+
+// GroupReadableResolver reports whether a user may read receipts in a group.
+// It lets the receipt repository gate the synthetic "All group" expansion by the
+// caller's per-group permission without importing the service layer — each caller
+// supplies a closure bound to the permission its direct single-group path
+// requires. Pass nil to GetPagedReceiptsByGroupId to skip the gate
+// (internal/system callers), exactly like a nil PaidByAllowedResolver.
+type GroupReadableResolver func(groupId uint) (bool, error)
+
+// CategoryTagVisibility is one group's resolved category/tag grant sets. An
+// *Unrestricted flag (with a nil/empty set) means "see every id of that resource
+// in this group" and folds in the app-level catalog bypass.
+type CategoryTagVisibility struct {
+	CategoryAllowed      map[uint]struct{}
+	CategoryUnrestricted bool
+	TagAllowed           map[uint]struct{}
+	TagUnrestricted      bool
+}
+
+// CategoryTagVisibilityResolver returns a group's category/tag visibility. It is
+// used to narrow a category/tag FILTER per group in the All-group view, so a
+// filter on an id only matches receipts in groups where that id is visible to the
+// caller. Pass nil to GetPagedReceiptsByGroupId to skip per-group filter narrowing
+// (internal/system callers), exactly like a nil PaidByAllowedResolver.
+type CategoryTagVisibilityResolver func(groupId uint) (CategoryTagVisibility, error)
+
 func (repository ReceiptRepository) GetPagedReceiptsByGroupId(
 	userId uint,
 	groupId string,
 	pagedRequest commands.ReceiptPagedRequestCommand,
 	associations []string,
 	paidByResolver PaidByAllowedResolver,
+	commentAuthorResolver CommentAuthorVisibilityResolver,
+	readableResolver GroupReadableResolver,
+	categoryTagResolver CategoryTagVisibilityResolver,
 ) ([]models.Receipt, int64, error) {
 	var receipts []models.Receipt
 	var count int64
@@ -544,8 +610,35 @@ func (repository ReceiptRepository) GetPagedReceiptsByGroupId(
 		return nil, 0, err
 	}
 
+	// The All-group read gate and the per-group category/tag narrowing must move
+	// as a pair: readableResolver drops groups the caller can't read, and
+	// categoryTagResolver scopes the category/tag filter per group. Supplying
+	// only one silently reopens a cross-group leak — a readable resolver without
+	// the category/tag one lets a category/tag filter fall through to
+	// BuildGormFilterQuery's flat, group-unscoped subquery (matching restricted
+	// ids across groups), and the reverse expands the read set to groups the
+	// caller can't read. Fail closed and loud so a half-wired caller trips here
+	// instead of leaking. Single-group reads pass neither (both nil is allowed).
+	if isAllGroup && (readableResolver == nil) != (categoryTagResolver == nil) {
+		return nil, 0, errors.New("all-group read requires both readable and category/tag resolvers")
+	}
+
+	// For the All-group view, apply the per-group category/tag FILTER as a
+	// disjunction below instead of the flat, group-unscoped subquery
+	// BuildGormFilterQuery emits — otherwise a caller could filter by a category
+	// id they can't see in a group and still match that group's receipts. Build
+	// the base filter WITHOUT the category/tag terms in that case (on a copy, so
+	// the caller's command is untouched); the real per-group narrowing is added
+	// after the group scope.
+	perGroupCatTag := isAllGroup && categoryTagResolver != nil
+	filterForBuild := pagedRequest
+	if perGroupCatTag {
+		filterForBuild.Filter.Categories = commands.PagedRequestField{}
+		filterForBuild.Filter.Tags = commands.PagedRequestField{}
+	}
+
 	// Apply filter
-	query, err := repository.BuildGormFilterQuery(pagedRequest)
+	query, err := repository.BuildGormFilterQuery(filterForBuild)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -558,6 +651,25 @@ func (repository ReceiptRepository) GetPagedReceiptsByGroupId(
 		if err != nil {
 			return nil, 0, err
 		}
+
+		// Gate the All-group expansion by the caller's per-group read permission.
+		// The All group is a real membership where the caller holds an
+		// unrestricted role, so without this a member could read receipts in every
+		// group they belong to — including groups whose role denies receipt read.
+		if readableResolver != nil {
+			readable := make([]uint, 0, len(memberGroupIds))
+			for _, gid := range memberGroupIds {
+				ok, resolveErr := readableResolver(gid)
+				if resolveErr != nil {
+					return nil, 0, resolveErr
+				}
+				if ok {
+					readable = append(readable, gid)
+				}
+			}
+			memberGroupIds = readable
+		}
+
 		query = query.Where("group_id IN ?", memberGroupIds)
 	} else {
 		query = query.Where("group_id = ?", groupId)
@@ -573,12 +685,40 @@ func (repository ReceiptRepository) GetPagedReceiptsByGroupId(
 		}
 	}
 
-	// Set order by
-	if len(pagedRequest.OrderBy) == 0 {
-		pagedRequest.OrderBy = "created_at"
+	// Apply the per-group category/tag filter disjunction for the All-group view
+	// (see perGroupCatTag above). AND-ed before the count so pagination/totalCount
+	// stay correct, exactly like the paid-by disjunction.
+	if perGroupCatTag {
+		query, err = repository.applyAllGroupCategoryTagFilter(query, memberGroupIds, pagedRequest.Filter, categoryTagResolver)
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 
-	if repository.isTrustedValue(pagedRequest) {
+	// Set order by
+	if len(pagedRequest.OrderBy) == 0 {
+		pagedRequest.OrderBy = constants.DEFAULT_RECEIPT_ORDER_BY
+	}
+
+	if !commands.IsValidSortDirection(pagedRequest.SortDirection) {
+		return nil, 0, errors.New("untrusted value " + pagedRequest.OrderBy + " " + string(pagedRequest.SortDirection))
+	}
+
+	if customFieldId, isCustomField := receiptsource.ParseCustomFieldKey(pagedRequest.OrderBy); isCustomField {
+		query, err = repository.orderByCustomField(query, customFieldId, pagedRequest.SortDirection)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else if pagedRequest.OrderBy == constants.FIRST_COMMENT_ORDER_BY {
+		groupIds := []uint{uintGroupId}
+		if isAllGroup {
+			groupIds = memberGroupIds
+		}
+		query, err = repository.orderByFirstComment(query, groupIds, commentAuthorResolver, pagedRequest.SortDirection)
+		if err != nil {
+			return nil, 0, err
+		}
+	} else if repository.isTrustedValue(pagedRequest) {
 		orderBy := pagedRequest.OrderBy
 		query = query.Order(orderBy + " " + string(pagedRequest.SortDirection))
 	} else {
@@ -688,13 +828,125 @@ func paidByInValues(allowedUserIds []uint) []uint {
 	return allowedUserIds
 }
 
+// applyAllGroupCategoryTagFilter AND-s per-group category/tag filter disjunctions
+// onto query for the all-group view, so a filter on a category/tag id matches
+// receipts only in the groups where that id is visible to the caller. It is a
+// no-op when no CONTAINS category/tag filter is supplied (the plain group scope
+// then stands). Mirrors ApplyPaidByDisjunction and is AND-ed before the count so
+// totalCount/pagination stay correct.
+func (repository ReceiptRepository) applyAllGroupCategoryTagFilter(
+	query *gorm.DB,
+	memberGroupIds []uint,
+	filter commands.ReceiptPagedRequestFilter,
+	resolver CategoryTagVisibilityResolver,
+) (*gorm.DB, error) {
+	categoryIds := containsFilterIds(filter.Categories)
+	tagIds := containsFilterIds(filter.Tags)
+	if len(categoryIds) == 0 && len(tagIds) == 0 {
+		return query, nil
+	}
+	if len(memberGroupIds) == 0 {
+		return query.Where("1 = 0"), nil
+	}
+
+	// Resolve each group's visibility at most once (shared across category + tag).
+	vis := make(map[uint]CategoryTagVisibility, len(memberGroupIds))
+	for _, gid := range memberGroupIds {
+		v, err := resolver(gid)
+		if err != nil {
+			return nil, err
+		}
+		vis[gid] = v
+	}
+
+	if len(categoryIds) > 0 {
+		query = query.Where(repository.resourceFilterDisjunction(
+			memberGroupIds, categoryIds, "receipt_categories", "category_id", vis,
+			func(v CategoryTagVisibility) (map[uint]struct{}, bool) {
+				return v.CategoryAllowed, v.CategoryUnrestricted
+			}))
+	}
+	if len(tagIds) > 0 {
+		query = query.Where(repository.resourceFilterDisjunction(
+			memberGroupIds, tagIds, "receipt_tags", "tag_id", vis,
+			func(v CategoryTagVisibility) (map[uint]struct{}, bool) {
+				return v.TagAllowed, v.TagUnrestricted
+			}))
+	}
+	return query, nil
+}
+
+// resourceFilterDisjunction builds an OR-of-branches, one per member group: a
+// receipt in group G matches only via the requested ids that are visible to the
+// caller in G. A group where none of the requested ids are visible contributes
+// `group_id = G AND 1 = 0` (no rows) — this is what closes the "filter probe" on
+// a restricted category/tag.
+func (repository ReceiptRepository) resourceFilterDisjunction(
+	memberGroupIds []uint,
+	requestedIds []uint,
+	joinTable string,
+	idColumn string,
+	vis map[uint]CategoryTagVisibility,
+	pick func(CategoryTagVisibility) (map[uint]struct{}, bool),
+) *gorm.DB {
+	disjunction := repository.GetDB().Session(&gorm.Session{NewDB: true})
+	for _, gid := range memberGroupIds {
+		allowed, unrestricted := pick(vis[gid])
+		branch := repository.GetDB().Session(&gorm.Session{NewDB: true}).Where("group_id = ?", gid)
+
+		effective := requestedIds
+		if !unrestricted {
+			effective = intersectIds(requestedIds, allowed)
+		}
+		if len(effective) == 0 {
+			branch = branch.Where("1 = 0")
+		} else {
+			sub := repository.GetDB().Session(&gorm.Session{NewDB: true}).
+				Table(joinTable).Select("receipt_id").
+				Where(idColumn+" IN ?", effective)
+			branch = branch.Where("id IN (?)", sub)
+		}
+		disjunction = disjunction.Or(branch)
+	}
+	return disjunction
+}
+
+// containsFilterIds returns a CONTAINS filter field's ids as uint, or nil when the
+// field is unset or is not a non-empty CONTAINS list.
+func containsFilterIds(field commands.PagedRequestField) []uint {
+	if field.Operation != commands.CONTAINS || field.Value == nil {
+		return nil
+	}
+	values, ok := field.Value.([]interface{})
+	if !ok || len(values) == 0 {
+		return nil
+	}
+	out := make([]uint, 0, len(values))
+	for _, v := range values {
+		if id, ok := utils.FilterValueToUint(v); ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func intersectIds(requested []uint, allowed map[uint]struct{}) []uint {
+	out := make([]uint, 0, len(requested))
+	for _, id := range requested {
+		if _, ok := allowed[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.ReceiptPagedRequestCommand) (*gorm.DB, error) {
 	query := repository.GetDB().Model(models.Receipt{})
 	// Name
 	if pagedRequest.Filter.Name.Value != nil {
 		name := pagedRequest.Filter.Name.Value.(string)
 		if len(name) > 0 {
-			query = repository.buildFilterQuery(query, name, pagedRequest.Filter.Name.Operation, "name", false)
+			query = repository.BuildFilterQuery(query, name, pagedRequest.Filter.Name.Operation, "name", false)
 		}
 	}
 
@@ -708,14 +960,14 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 			date = pagedRequest.Filter.Date.Value.(string)
 		}
 
-		query = repository.buildFilterQuery(query, date, pagedRequest.Filter.Date.Operation, "date", isBetweenOperation)
+		query = repository.BuildFilterQuery(query, date, pagedRequest.Filter.Date.Operation, "date", isBetweenOperation)
 	}
 
 	// Paid By
 	if pagedRequest.Filter.PaidBy.Value != nil {
 		paidBy := pagedRequest.Filter.PaidBy.Value.([]interface{})
 		if len(paidBy) > 0 {
-			query = repository.buildFilterQuery(query, paidBy, pagedRequest.Filter.PaidBy.Operation, "paid_by_user_id", true)
+			query = repository.BuildFilterQuery(query, paidBy, pagedRequest.Filter.PaidBy.Operation, "paid_by_user_id", true)
 		}
 	}
 
@@ -748,7 +1000,7 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 		} else {
 			amount = pagedRequest.Filter.Amount.Value.(float64)
 		}
-		query = repository.buildFilterQuery(
+		query = repository.BuildFilterQuery(
 			query,
 			amount,
 			pagedRequest.Filter.Amount.Operation,
@@ -760,7 +1012,7 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 	if pagedRequest.Filter.Status.Value != nil {
 		status := pagedRequest.Filter.Status.Value.([]interface{})
 		if len(status) > 0 {
-			query = repository.buildFilterQuery(query, status, pagedRequest.Filter.Status.Operation, "status", true)
+			query = repository.BuildFilterQuery(query, status, pagedRequest.Filter.Status.Operation, "status", true)
 		}
 	}
 
@@ -768,7 +1020,7 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 	if pagedRequest.Filter.Group.Value != nil {
 		groups := pagedRequest.Filter.Group.Value.([]interface{})
 		if len(groups) > 0 {
-			query = repository.buildFilterQuery(query, groups, pagedRequest.Filter.Group.Operation, "group_id", true)
+			query = repository.BuildFilterQuery(query, groups, pagedRequest.Filter.Group.Operation, "group_id", true)
 		}
 	}
 
@@ -782,7 +1034,7 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 			resolvedDate = pagedRequest.Filter.ResolvedDate.Value.(string)
 		}
 
-		query = repository.buildFilterQuery(
+		query = repository.BuildFilterQuery(
 			query,
 			resolvedDate,
 			pagedRequest.Filter.ResolvedDate.Operation,
@@ -801,7 +1053,7 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 			addedAt = pagedRequest.Filter.CreatedAt.Value.(string)
 		}
 
-		query = repository.buildFilterQuery(
+		query = repository.BuildFilterQuery(
 			query,
 			addedAt,
 			pagedRequest.Filter.CreatedAt.Operation,
@@ -813,47 +1065,219 @@ func (repository ReceiptRepository) BuildGormFilterQuery(pagedRequest commands.R
 	return query, nil
 }
 
-func (repository ReceiptRepository) buildFilterQuery(runningQuery *gorm.DB, value interface{}, operation commands.FilterOperation, fieldName string, isArray bool) *gorm.DB {
-	if operation == commands.EQUALS && !isArray {
-		return runningQuery.Where(fmt.Sprintf("%v = ?", fieldName), value)
+// customFieldSortExpressions returns, for a custom field's type, the expression a
+// value row is sorted by and the column that must be non-null for the row to
+// count. They differ only for CURRENCY.
+//
+// CurrencyValue is a *decimal.Decimal with no gorm type tag, and gorm types an
+// untagged driver.Valuer by what Value() returns - a string for decimal - so
+// currency_value is a text column and a bare sort on it is lexicographic
+// ("100" < "20"). CAST(x AS DECIMAL(20,6)) fixes that and is portable: MySQL and
+// Postgres take DECIMAL(p,s) directly, and SQLite gives that type name NUMERIC
+// affinity. Retyping the column would remove the cast, but that is a migration
+// over existing data and belongs in its own change (see api/CLAUDE.md).
+func customFieldSortExpressions(customFieldType models.CustomFieldType) (sortExpression string, notNullColumn string, ok bool) {
+	// Every column is table-qualified: a SELECT joins custom_field_options, which
+	// carries a custom_field_id of its own.
+	switch customFieldType {
+	case models.TEXT:
+		return "custom_field_values.string_value", "custom_field_values.string_value", true
+	case models.DATE:
+		return "custom_field_values.date_value", "custom_field_values.date_value", true
+	case models.BOOLEAN:
+		return "custom_field_values.boolean_value", "custom_field_values.boolean_value", true
+	case models.CURRENCY:
+		return "CAST(custom_field_values.currency_value AS DECIMAL(20,6))", "custom_field_values.currency_value", true
+	case models.SELECT:
+		// A select stores an option id; readers see the option's text.
+		return "custom_field_options.value", "custom_field_values.select_value", true
 	}
 
-	if operation == commands.CONTAINS && !isArray {
-		searchValue := value.(string)
-		searchValue = "%" + searchValue + "%"
-		return runningQuery.Where(fmt.Sprintf("%v LIKE ?", fieldName), searchValue)
+	return "", "", false
+}
+
+// defaultReceiptOrder is the ordering a custom-field sort falls back to when the
+// field cannot be sorted on at all.
+//
+// It carries the same receipts.id tiebreaker as the custom-field path, and for
+// the same reason: created_at is not unique - receipts imported or created in one
+// batch share a timestamp - and without a unique last term LIMIT/OFFSET paging
+// repeats and skips rows between pages. BaseRepository.Sort supplies the column
+// and direction; both clauses are column-based, so gorm appends the tiebreaker
+// rather than replacing the clause (unlike the expression form below).
+func (repository ReceiptRepository) defaultReceiptOrder(
+	query *gorm.DB,
+	sortDirection commands.SortDirection,
+) *gorm.DB {
+	return repository.Sort(query, constants.DEFAULT_RECEIPT_ORDER_BY, sortDirection).
+		Order(clause.OrderByColumn{
+			Column: clause.Column{Table: "receipts", Name: "id"},
+			Desc:   true,
+		})
+}
+
+// orderByCustomField orders query by a receipt's value for one custom field.
+//
+// The value is read with a correlated subquery rather than a join: nothing stops
+// a receipt holding several values for one field (custom_field_values carries no
+// unique index on receipt_id + custom_field_id), and a join would multiply the
+// receipt rows, corrupting both the total count and pagination.
+//
+// Which of several values wins matches the reporting engine
+// (receiptsource.addCustomFields): the lowest id among the values that actually
+// resolve, so an empty low-id row cannot hide a real one. That is what the
+// IS NOT NULL clause is for, and why a SELECT joins its options rather than
+// left-joining them - an option id that no longer resolves is skipped, not
+// preferred.
+//
+// A field that no longer exists sorts by the default column instead of erroring:
+// clients persist their sort, and a deleted custom field must not make every
+// subsequent list load fail.
+func (repository ReceiptRepository) orderByCustomField(
+	query *gorm.DB,
+	customFieldId uint,
+	sortDirection commands.SortDirection,
+) (*gorm.DB, error) {
+	customFieldRepository := NewCustomFieldRepository(nil)
+	customFields, err := customFieldRepository.GetCustomFieldsByIds([]uint{customFieldId})
+	if err != nil {
+		return nil, err
 	}
 
-	if operation == commands.CONTAINS && isArray {
-		return runningQuery.Where(fmt.Sprintf("%v IN ?", fieldName), value)
+	if len(customFields) == 0 {
+		return repository.defaultReceiptOrder(query, sortDirection), nil
 	}
 
-	if operation == commands.GREATER_THAN && !isArray {
-		return runningQuery.Where(fmt.Sprintf("%v > ?", fieldName), value)
+	sortExpression, notNullColumn, ok := customFieldSortExpressions(customFields[0].Type)
+	if !ok {
+		return repository.defaultReceiptOrder(query, sortDirection), nil
 	}
 
-	if operation == commands.LESS_THAN && !isArray {
-		return runningQuery.Where(fmt.Sprintf("%v < ?", fieldName), value)
+	valueQuery := repository.GetDB().
+		Model(&models.CustomFieldValue{}).
+		Select(sortExpression).
+		Where("custom_field_values.receipt_id = receipts.id").
+		Where("custom_field_values.custom_field_id = ?", customFieldId).
+		Where(notNullColumn + " IS NOT NULL").
+		Order("custom_field_values.id").
+		Limit(1)
+
+	if customFields[0].Type == models.SELECT {
+		valueQuery = valueQuery.Joins(
+			"JOIN custom_field_options ON custom_field_options.id = custom_field_values.select_value",
+		)
 	}
 
-	if operation == commands.BETWEEN {
-		arrayValue := value.([]interface{})
-		if len(arrayValue) != 2 {
-			return runningQuery
+	return repository.orderBySubquery(query, valueQuery, sortDirection), nil
+}
+
+// orderByFirstComment orders query by the text of each receipt's first comment
+// (firstCommentOrder), read with a correlated subquery for the same reason
+// orderByCustomField uses one: a receipt has many comments, and a join would
+// multiply its rows and corrupt the count and pagination.
+//
+// Only a comment the caller may see is a candidate. Member isolation drops a
+// comment by an author the caller cannot see from every response, so sorting on
+// it would order the table by text that is never shown - and would leak it, one
+// comparison at a time. groupIds is the set of groups the query spans (one, or
+// the caller's member groups for the All group), so each receipt is judged by its
+// own group's visibility.
+func (repository ReceiptRepository) orderByFirstComment(
+	query *gorm.DB,
+	groupIds []uint,
+	resolver CommentAuthorVisibilityResolver,
+	sortDirection commands.SortDirection,
+) (*gorm.DB, error) {
+	commentQuery := repository.GetDB().
+		Model(&models.Comment{}).
+		Select("comments.comment").
+		Where("comments.receipt_id = receipts.id").
+		Order(firstCommentOrder).
+		Limit(1)
+
+	visibility, err := repository.commentAuthorVisibility(groupIds, resolver)
+	if err != nil {
+		return nil, err
+	}
+	if visibility != nil {
+		commentQuery = commentQuery.Where(visibility)
+	}
+
+	return repository.orderBySubquery(query, commentQuery, sortDirection), nil
+}
+
+// commentAuthorVisibility builds the predicate restricting a first-comment
+// subquery to authors the caller may see, as a per-group disjunction on the outer
+// receipt's group mirroring SystemTaskRepository.applyActivityVisibilityDisjunction:
+// an unrestricted group contributes `receipts.group_id = G`, a restricted one
+// `receipts.group_id = G AND (comments.user_id IS NULL OR comments.user_id IN (visible))`.
+// A comment with no author names no one, so it stays visible - as it does in
+// PermissionService's filterComments. Returns nil, adding no predicate at all, when
+// there is no resolver or no group restricts the caller, which is every
+// non-isolated install.
+func (repository ReceiptRepository) commentAuthorVisibility(
+	groupIds []uint,
+	resolver CommentAuthorVisibilityResolver,
+) (*gorm.DB, error) {
+	if resolver == nil {
+		return nil, nil
+	}
+
+	disjunction := repository.GetDB().Session(&gorm.Session{NewDB: true})
+	restricted := false
+	for _, groupId := range groupIds {
+		visibleIds, unrestricted, err := resolver(groupId)
+		if err != nil {
+			return nil, err
+		}
+		if unrestricted {
+			disjunction = disjunction.Or("receipts.group_id = ?", groupId)
+			continue
 		}
 
-		return runningQuery.Where(fmt.Sprintf("%v >= ? AND %v <= ?", fieldName, fieldName), arrayValue[0], arrayValue[1])
+		restricted = true
+		groupCondition := repository.GetDB().Session(&gorm.Session{NewDB: true}).
+			Where("receipts.group_id = ?", groupId).
+			// User ids start at 1, so paidByInValues' IN (0) guard applies unchanged.
+			Where("(comments.user_id IS NULL OR comments.user_id IN ?)", paidByInValues(visibleIds))
+		disjunction = disjunction.Or(groupCondition)
 	}
 
-	if operation == commands.WITHIN_CURRENT_MONTH {
-		now := time.Now()
-		beginningOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		endOfToday := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location())
+	if !restricted {
+		return nil, nil
+	}
+	return disjunction, nil
+}
 
-		return runningQuery.Where(fmt.Sprintf("%v >= ? AND %v <= ?", fieldName, fieldName), beginningOfMonth, endOfToday)
+// orderBySubquery orders query by the value valueQuery - a correlated subquery
+// against the outer receipts row - yields for each receipt.
+//
+// The direction and the tiebreaker have to live in this one expression.
+// clause.OrderBy builds its Expression *instead of* its Columns and Desc, and
+// a second Order() call would silently replace this clause rather than append
+// to it. The tiebreaker is not cosmetic: a boolean or select field has a
+// handful of distinct values, many receipts have no comment at all, and
+// without a unique last term LIMIT/OFFSET paging repeats and skips rows between
+// pages.
+//
+// Because Columns and Desc are unavailable here, this is the one ordering path
+// that cannot delegate to BaseRepository.Sort. The keyword is therefore chosen
+// from literals rather than built from sortDirection, so the caller's string
+// never reaches the SQL even if a future call site skips IsValidSortDirection.
+func (repository ReceiptRepository) orderBySubquery(
+	query *gorm.DB,
+	valueQuery *gorm.DB,
+	sortDirection commands.SortDirection,
+) *gorm.DB {
+	direction := "ASC"
+	if sortDirection == commands.DESCENDING {
+		direction = "DESC"
 	}
 
-	return runningQuery
+	return query.Order(clause.OrderBy{Expression: clause.Expr{
+		SQL:  "(?) " + direction + ", receipts.id DESC",
+		Vars: []any{valueQuery},
+	}})
 }
 
 func (repository ReceiptRepository) isTrustedValue(pagedRequest commands.ReceiptPagedRequestCommand) bool {

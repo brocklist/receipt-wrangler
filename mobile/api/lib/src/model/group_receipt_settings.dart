@@ -5,6 +5,8 @@
 // ignore_for_file: unused_element
 import 'package:openapi/src/model/base_model.dart';
 import 'package:openapi/src/model/receipt_status.dart';
+import 'package:built_collection/built_collection.dart';
+import 'package:openapi/src/model/receipt_summary_position.dart';
 import 'package:openapi/src/model/quick_scan_default_paid_by_type.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
@@ -39,15 +41,71 @@ part 'group_receipt_settings.g.dart';
 /// * [quickScanCategoriesRequired] - Require the categories field in quick scan
 /// * [quickScanTagsEnabled] - Show the tags field in quick scan
 /// * [quickScanTagsRequired] - Require the tags field in quick scan
+/// * [quickScanCommentEnabled] - Show the comment field in quick scan
+/// * [quickScanCommentRequired] - Require the comment field in quick scan
+/// * [defaultCustomFieldIds] - Custom field ids that are pre-added to every receipt created for this group. Always present; an empty array means the group has configured none. Read only here - write via UpdateGroupReceiptSettingsCommand.defaultCustomFieldIds.
+/// * [applyDefaultCustomFieldsOnIngest] - Also attach the group's default custom fields to receipts the SERVER creates (quick scan, email integration). Off by default.
+/// * [receiptSummaryEnabled] - Show the block of totals under this group's receipts table. Off by default, so an existing install is unchanged until an admin opts in.
+/// * [receiptSummaryCustomFieldIds] - CURRENCY custom field ids totalled in the receipt summary, in the order their columns are rendered. Always present; an empty array means the group totals only the receipt amount. Read only here - write via UpdateGroupReceiptSettingsCommand.receiptSummaryCustomFieldIds.
+/// * [receiptSummaryStatuses] - Receipt statuses broken out as their own row in the receipt summary, in ReceiptStatus declaration order. A configured status matching no receipt still renders, as a zero row. Always present; an empty array means the summary shows only the overall row. Read only here - write via UpdateGroupReceiptSettingsCommand.receiptSummaryStatuses.
+/// * [receiptSummaryPosition] 
 @BuiltValue()
 abstract class GroupReceiptSettings implements BaseModel, Built<GroupReceiptSettings, GroupReceiptSettingsBuilder> {
   @BuiltValueField(wireName: r'quickScanDefaultPaidByType')
   QuickScanDefaultPaidByType? get quickScanDefaultPaidByType;
   // enum quickScanDefaultPaidByTypeEnum {  UPLOADER,  USER,  ,  };
 
+  /// Receipt statuses broken out as their own row in the receipt summary, in ReceiptStatus declaration order. A configured status matching no receipt still renders, as a zero row. Always present; an empty array means the summary shows only the overall row. Read only here - write via UpdateGroupReceiptSettingsCommand.receiptSummaryStatuses.
+  @BuiltValueField(wireName: r'receiptSummaryStatuses')
+  BuiltList<ReceiptStatus>? get receiptSummaryStatuses;
+
   /// Group foreign key
   @BuiltValueField(wireName: r'groupId')
   int get groupId;
+
+  /// Hide receipt comments
+  @BuiltValueField(wireName: r'hideComments')
+  bool? get hideComments;
+
+  /// Also attach the group's default custom fields to receipts the SERVER creates (quick scan, email integration). Off by default.
+  @BuiltValueField(wireName: r'applyDefaultCustomFieldsOnIngest')
+  bool? get applyDefaultCustomFieldsOnIngest;
+
+  @BuiltValueField(wireName: r'quickScanDefaultStatus')
+  ReceiptStatus? get quickScanDefaultStatus;
+  // enum quickScanDefaultStatusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  DECLINED,  ,  };
+
+  /// Require the categories field in quick scan
+  @BuiltValueField(wireName: r'quickScanCategoriesRequired')
+  bool? get quickScanCategoriesRequired;
+
+  /// Require the status field in quick scan
+  @BuiltValueField(wireName: r'quickScanStatusRequired')
+  bool? get quickScanStatusRequired;
+
+  @BuiltValueField(wireName: r'receiptSummaryPosition')
+  ReceiptSummaryPosition? get receiptSummaryPosition;
+  // enum receiptSummaryPositionEnum {  TOP,  BOTTOM,  };
+
+  /// Hide receipt item categories
+  @BuiltValueField(wireName: r'hideItemCategories')
+  bool? get hideItemCategories;
+
+  /// Require the comment field in quick scan
+  @BuiltValueField(wireName: r'quickScanCommentRequired')
+  bool? get quickScanCommentRequired;
+
+  /// Hide receipt item tags
+  @BuiltValueField(wireName: r'hideItemTags')
+  bool? get hideItemTags;
+
+  /// Require the paid by field in quick scan
+  @BuiltValueField(wireName: r'quickScanPaidByRequired')
+  bool? get quickScanPaidByRequired;
+
+  /// Default paid by user id when paid by is optional and type is USER
+  @BuiltValueField(wireName: r'quickScanDefaultPaidById')
+  int? get quickScanDefaultPaidById;
 
   /// Show the paid by field in quick scan
   @BuiltValueField(wireName: r'quickScanPaidByEnabled')
@@ -61,61 +119,45 @@ abstract class GroupReceiptSettings implements BaseModel, Built<GroupReceiptSett
   @BuiltValueField(wireName: r'hideImages')
   bool? get hideImages;
 
-  /// Hide receipt comments
-  @BuiltValueField(wireName: r'hideComments')
-  bool? get hideComments;
+  /// Show the comment field in quick scan
+  @BuiltValueField(wireName: r'quickScanCommentEnabled')
+  bool? get quickScanCommentEnabled;
 
   /// Hide receipt tags
   @BuiltValueField(wireName: r'hideReceiptTags')
   bool? get hideReceiptTags;
 
-  @BuiltValueField(wireName: r'quickScanDefaultStatus')
-  ReceiptStatus? get quickScanDefaultStatus;
-  // enum quickScanDefaultStatusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  ,  };
-
-  /// Require the categories field in quick scan
-  @BuiltValueField(wireName: r'quickScanCategoriesRequired')
-  bool? get quickScanCategoriesRequired;
+  /// Show the block of totals under this group's receipts table. Off by default, so an existing install is unchanged until an admin opts in.
+  @BuiltValueField(wireName: r'receiptSummaryEnabled')
+  bool? get receiptSummaryEnabled;
 
   /// Hide receipt categories
   @BuiltValueField(wireName: r'hideReceiptCategories')
   bool? get hideReceiptCategories;
 
-  /// Require the status field in quick scan
-  @BuiltValueField(wireName: r'quickScanStatusRequired')
-  bool? get quickScanStatusRequired;
-
   /// Show the categories field in quick scan
   @BuiltValueField(wireName: r'quickScanCategoriesEnabled')
   bool? get quickScanCategoriesEnabled;
+
+  /// CURRENCY custom field ids totalled in the receipt summary, in the order their columns are rendered. Always present; an empty array means the group totals only the receipt amount. Read only here - write via UpdateGroupReceiptSettingsCommand.receiptSummaryCustomFieldIds.
+  @BuiltValueField(wireName: r'receiptSummaryCustomFieldIds')
+  BuiltList<int>? get receiptSummaryCustomFieldIds;
 
   /// Show the tags field in quick scan
   @BuiltValueField(wireName: r'quickScanTagsEnabled')
   bool? get quickScanTagsEnabled;
 
-  /// Hide receipt item categories
-  @BuiltValueField(wireName: r'hideItemCategories')
-  bool? get hideItemCategories;
-
   /// Hide share tags
   @BuiltValueField(wireName: r'hideShareTags')
   bool? get hideShareTags;
-
-  /// Hide receipt item tags
-  @BuiltValueField(wireName: r'hideItemTags')
-  bool? get hideItemTags;
-
-  /// Require the paid by field in quick scan
-  @BuiltValueField(wireName: r'quickScanPaidByRequired')
-  bool? get quickScanPaidByRequired;
 
   /// Show the status field in quick scan
   @BuiltValueField(wireName: r'quickScanStatusEnabled')
   bool? get quickScanStatusEnabled;
 
-  /// Default paid by user id when paid by is optional and type is USER
-  @BuiltValueField(wireName: r'quickScanDefaultPaidById')
-  int? get quickScanDefaultPaidById;
+  /// Custom field ids that are pre-added to every receipt created for this group. Always present; an empty array means the group has configured none. Read only here - write via UpdateGroupReceiptSettingsCommand.defaultCustomFieldIds.
+  @BuiltValueField(wireName: r'defaultCustomFieldIds')
+  BuiltList<int>? get defaultCustomFieldIds;
 
   /// Hide share categories
   @BuiltValueField(wireName: r'hideShareCategories')
@@ -154,6 +196,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
         specifiedType: const FullType(QuickScanDefaultPaidByType),
       );
     }
+    if (object.receiptSummaryStatuses != null) {
+      yield r'receiptSummaryStatuses';
+      yield serializers.serialize(
+        object.receiptSummaryStatuses,
+        specifiedType: const FullType(BuiltList, [FullType(ReceiptStatus)]),
+      );
+    }
     yield r'groupId';
     yield serializers.serialize(
       object.groupId,
@@ -163,6 +212,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
       yield r'hideComments';
       yield serializers.serialize(
         object.hideComments,
+        specifiedType: const FullType(bool),
+      );
+    }
+    if (object.applyDefaultCustomFieldsOnIngest != null) {
+      yield r'applyDefaultCustomFieldsOnIngest';
+      yield serializers.serialize(
+        object.applyDefaultCustomFieldsOnIngest,
         specifiedType: const FullType(bool),
       );
     }
@@ -192,10 +248,24 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
         specifiedType: const FullType(bool),
       );
     }
+    if (object.receiptSummaryPosition != null) {
+      yield r'receiptSummaryPosition';
+      yield serializers.serialize(
+        object.receiptSummaryPosition,
+        specifiedType: const FullType(ReceiptSummaryPosition),
+      );
+    }
     if (object.hideItemCategories != null) {
       yield r'hideItemCategories';
       yield serializers.serialize(
         object.hideItemCategories,
+        specifiedType: const FullType(bool),
+      );
+    }
+    if (object.quickScanCommentRequired != null) {
+      yield r'quickScanCommentRequired';
+      yield serializers.serialize(
+        object.quickScanCommentRequired,
         specifiedType: const FullType(bool),
       );
     }
@@ -260,10 +330,24 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
         specifiedType: const FullType(bool),
       );
     }
+    if (object.quickScanCommentEnabled != null) {
+      yield r'quickScanCommentEnabled';
+      yield serializers.serialize(
+        object.quickScanCommentEnabled,
+        specifiedType: const FullType(bool),
+      );
+    }
     if (object.hideReceiptTags != null) {
       yield r'hideReceiptTags';
       yield serializers.serialize(
         object.hideReceiptTags,
+        specifiedType: const FullType(bool),
+      );
+    }
+    if (object.receiptSummaryEnabled != null) {
+      yield r'receiptSummaryEnabled';
+      yield serializers.serialize(
+        object.receiptSummaryEnabled,
         specifiedType: const FullType(bool),
       );
     }
@@ -288,6 +372,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
         specifiedType: const FullType(int),
       );
     }
+    if (object.receiptSummaryCustomFieldIds != null) {
+      yield r'receiptSummaryCustomFieldIds';
+      yield serializers.serialize(
+        object.receiptSummaryCustomFieldIds,
+        specifiedType: const FullType(BuiltList, [FullType(int)]),
+      );
+    }
     if (object.quickScanTagsEnabled != null) {
       yield r'quickScanTagsEnabled';
       yield serializers.serialize(
@@ -307,6 +398,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
       yield serializers.serialize(
         object.quickScanStatusEnabled,
         specifiedType: const FullType(bool),
+      );
+    }
+    if (object.defaultCustomFieldIds != null) {
+      yield r'defaultCustomFieldIds';
+      yield serializers.serialize(
+        object.defaultCustomFieldIds,
+        specifiedType: const FullType(BuiltList, [FullType(int)]),
       );
     }
     if (object.hideShareCategories != null) {
@@ -346,6 +444,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
           ) as QuickScanDefaultPaidByType;
           result.quickScanDefaultPaidByType = valueDes;
           break;
+        case r'receiptSummaryStatuses':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(ReceiptStatus)]),
+          ) as BuiltList<ReceiptStatus>;
+          result.receiptSummaryStatuses.replace(valueDes);
+          break;
         case r'groupId':
           final valueDes = serializers.deserialize(
             value,
@@ -359,6 +464,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
             specifiedType: const FullType(bool),
           ) as bool;
           result.hideComments = valueDes;
+          break;
+        case r'applyDefaultCustomFieldsOnIngest':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.applyDefaultCustomFieldsOnIngest = valueDes;
           break;
         case r'createdAt':
           final valueDes = serializers.deserialize(
@@ -388,12 +500,26 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
           ) as bool;
           result.quickScanStatusRequired = valueDes;
           break;
+        case r'receiptSummaryPosition':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(ReceiptSummaryPosition),
+          ) as ReceiptSummaryPosition;
+          result.receiptSummaryPosition = valueDes;
+          break;
         case r'hideItemCategories':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(bool),
           ) as bool;
           result.hideItemCategories = valueDes;
+          break;
+        case r'quickScanCommentRequired':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.quickScanCommentRequired = valueDes;
           break;
         case r'id':
           final valueDes = serializers.deserialize(
@@ -458,12 +584,26 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
           ) as bool;
           result.hideImages = valueDes;
           break;
+        case r'quickScanCommentEnabled':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.quickScanCommentEnabled = valueDes;
+          break;
         case r'hideReceiptTags':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(bool),
           ) as bool;
           result.hideReceiptTags = valueDes;
+          break;
+        case r'receiptSummaryEnabled':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.receiptSummaryEnabled = valueDes;
           break;
         case r'hideReceiptCategories':
           final valueDes = serializers.deserialize(
@@ -486,6 +626,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
           ) as int;
           result.createdBy = valueDes;
           break;
+        case r'receiptSummaryCustomFieldIds':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(int)]),
+          ) as BuiltList<int>;
+          result.receiptSummaryCustomFieldIds.replace(valueDes);
+          break;
         case r'quickScanTagsEnabled':
           final valueDes = serializers.deserialize(
             value,
@@ -506,6 +653,13 @@ class _$GroupReceiptSettingsSerializer implements PrimitiveSerializer<GroupRecei
             specifiedType: const FullType(bool),
           ) as bool;
           result.quickScanStatusEnabled = valueDes;
+          break;
+        case r'defaultCustomFieldIds':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(int)]),
+          ) as BuiltList<int>;
+          result.defaultCustomFieldIds.replace(valueDes);
           break;
         case r'hideShareCategories':
           final valueDes = serializers.deserialize(

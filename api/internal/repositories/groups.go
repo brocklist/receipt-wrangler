@@ -33,10 +33,15 @@ func (repository GroupRepository) GetPagedGroups(command commands.PagedGroupRequ
 		return nil, 0, errors.New("invalid column")
 	}
 
-	// Apply filter and set counts
+	// Apply filter and set counts. Only the explicit ALL filter (already gated on
+	// app.groups.read in the handler) lists every group; ANY other value —
+	// including an unexpected one that slipped past command validation — falls
+	// into the default branch and is scoped to the caller's own groups. This
+	// fail-closed default is what stops a bogus filter value from returning every
+	// group in the system.
 	if command.GroupFilter.AssociatedGroup == commands.ASSOCIATED_GROUP_ALL {
 		query.Count(&count)
-	} else if command.GroupFilter.AssociatedGroup == commands.ASSOCIATED_GROUP_MINE {
+	} else {
 		groupMemberRepository := NewGroupMemberRepository(nil)
 		groupMembers, err := groupMemberRepository.GetGroupMembersByUserId(userId)
 		if err != nil {
@@ -96,6 +101,7 @@ func (repository GroupRepository) CreateGroup(command commands.UpsertGroupComman
 	groupToCreate.Name = command.Name
 	groupToCreate.Status = command.Status
 	groupToCreate.IsAllGroup = command.IsAllGroup
+	groupToCreate.IsolateMembers = command.IsolateMembers
 	for i := 0; i < len(command.GroupMembers); i++ {
 		groupMember := buildGroupMemberFromCommand(command.GroupMembers[i])
 		groupToCreate.GroupMembers = append(groupToCreate.GroupMembers, groupMember)
@@ -190,12 +196,46 @@ func (repository GroupRepository) UpdateGroup(command commands.UpsertGroupComman
 	}
 
 	err = db.Transaction(func(tx *gorm.DB) error {
-		txErr := tx.Session(&gorm.Session{FullSaveAssociations: true}).Model(&groupToUpdate).Omit("ID", "is_all_group").Updates(&groupToUpdate).Error
+		// Read the members' grant restriction flags FIRST, before anything writes the
+		// roster. Both the FullSaveAssociations Updates below and the association
+		// Replace further down persist GroupMember rows rebuilt from the request
+		// command, which carry both flags at their zero value — so a plain group edit
+		// (even just a rename) would otherwise clear every member's restriction and
+		// silently widen them back to their role's full set.
+		grantFlags, txErr := GetMemberGrantFlagsForGroup(tx, uintId)
+		if txErr != nil {
+			return txErr
+		}
+		for i := range groupToUpdate.GroupMembers {
+			flags, isExistingMember := grantFlags[groupToUpdate.GroupMembers[i].UserID]
+			if isExistingMember {
+				groupToUpdate.GroupMembers[i].CategoryGrantsRestricted = flags.CategoryGrantsRestricted
+				groupToUpdate.GroupMembers[i].TagGrantsRestricted = flags.TagGrantsRestricted
+			}
+		}
+
+		txErr = tx.Session(&gorm.Session{FullSaveAssociations: true}).Model(&groupToUpdate).Omit("ID", "is_all_group").Updates(&groupToUpdate).Error
+		if txErr != nil {
+			return txErr
+		}
+
+		// Persist isolate_members explicitly: a struct Updates skips a zero-value
+		// (false) bool, so toggling isolation off would otherwise not persist.
+		txErr = tx.Model(&models.Group{}).Where("id = ?", uintId).Update("isolate_members", command.IsolateMembers).Error
 		if txErr != nil {
 			return txErr
 		}
 
 		txErr = tx.Model(&groupToUpdate).Association("GroupMembers").Unscoped().Replace(groupToUpdate.GroupMembers)
+		if txErr != nil {
+			return txErr
+		}
+
+		// The replace above rewrites the whole roster, so any member it dropped still
+		// has per-member category/tag grant rows behind them. Clear whatever no longer
+		// has a membership — retained members keep theirs, and a removed member cannot
+		// have their old visibility silently restored by being re-added later.
+		txErr = DeleteOrphanedMemberGrants(tx, uintId)
 		if txErr != nil {
 			return txErr
 		}
@@ -254,13 +294,24 @@ func (repository GroupRepository) GetGroupById(id string,
 		}
 	}
 
-	if group.GroupReceiptSettings.ID == 0 && createMissingGroupReceiptSettings {
-		groupReceiptSettingsRepository := NewGroupReceiptSettingsRepository(repository.TX)
+	groupReceiptSettingsRepository := NewGroupReceiptSettingsRepository(repository.TX)
 
+	if group.GroupReceiptSettings.ID == 0 && createMissingGroupReceiptSettings {
 		_, err := groupReceiptSettingsRepository.CreateGroupReceiptSettings(group.ID)
 		if err != nil {
 			return models.Group{}, err
 		}
+	}
+
+	// The settings projections are `gorm:"-"`, so nothing preloads them. Hydrate explicitly at this
+	// serialization boundary. Keyed on GroupId rather than the settings row id precisely because
+	// the settings row above is created and DISCARDED, leaving its ID at 0 on the very call that
+	// created it (a freshly created row has nothing configured, so empty [] is the right answer).
+	err = groupReceiptSettingsRepository.LoadSettingsProjections(
+		[]*models.GroupReceiptSettings{&group.GroupReceiptSettings},
+	)
+	if err != nil {
+		return models.Group{}, err
 	}
 
 	return group, nil

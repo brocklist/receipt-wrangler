@@ -26,13 +26,13 @@ test.describe('assigning modern roles (admin)', () => {
     const username = uniqueName('approle');
     await page.goto('/users');
 
-    await page.getByRole('button', { name: 'Create User' }).click();
+    await page.getByTestId('user-add').click();
     const dialog = page.getByRole('dialog').filter({ hasText: 'Create User' });
     await expect(dialog).toBeVisible();
 
     await dialog.getByLabel('Username').fill(username);
     await dialog.getByLabel('Displayname').fill('E2E App Role');
-    await dialog.getByLabel('Password').fill('a-really-secure-password');
+    await dialog.getByLabel('Password', { exact: true }).fill('a-really-secure-password');
 
     // The app-role selector defaults to the configured default app role.
     const roleSelect = selectByLabel(page, 'App Role');

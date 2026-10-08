@@ -6,6 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Receipt Wrangler API is a Go-based backend service for a receipt management and splitting application. It provides OCR-powered receipt scanning, AI-assisted data extraction, email integration, and multi-user support with group management capabilities.
 
+## Quick Scan recognition tasks
+
+Quick Scan uploads can register a durable `RecognitionTask` through `/api/recognitionTask`, then upload
+one file to its `/file` endpoint. The legacy Quick Scan endpoint remains compatible and tracks new
+submissions too. `RecognitionTask` owns upload bytes, stages, attempt/generation fences, automatic
+retry times and receipt results; `SystemTask` continues to provide activity history. The source is
+retained under the data directory for retry and activity recovery, and removed after a successful
+receipt transaction. Stage timing uses server timestamps; the reconciler repairs idle uploads and
+queue/execution failures without invalidating an active upload heartbeat.
+
+Registration and retries enforce current group field grants and comment requirements. A Quick Scan
+comment is private task input and is saved with the receipt, images and success state in the fenced
+transaction. All-user list access does not grant upload or retry access. Update `swagger.yml` and run
+`generate-client.sh` for API changes; desktop and mobile generated clients must not be hand-edited.
+
 ## Development Commands
 
 ### Building and Running
@@ -20,7 +35,7 @@ Receipt Wrangler API is a Go-based backend service for a receipt management and 
 > re-run every time. Follow them top-to-bottom and the server comes up on `:8081` in ~2 min.
 
 **Why the normal path doesn't just work.** The sandbox base image is **Ubuntu 24.04 (Noble)**, but
-the project's Docker images (and `set-up-dependencies.sh`) assume **Debian** (`golang:1.25-trixie` /
+the project's Docker images (and `set-up-dependencies.sh`) assume **Debian** (`golang:1.26-trixie` /
 `bullseye`). Two consequences:
 - The CGO binding `gopkg.in/gographics/imagick.v3` needs **ImageMagick 7**'s MagickWand API. Ubuntu's
   repos only ship ImageMagick **6** (`libmagickwand-dev` = IM6) and have no IM7 package, so
@@ -65,8 +80,42 @@ loader cache. You do **not** need `PKG_CONFIG_PATH` or `LD_LIBRARY_PATH` once `l
 (fallbacks if it somehow didn't: `PKG_CONFIG_PATH=/usr/local/lib/pkgconfig` for the build,
 `LD_LIBRARY_PATH=/usr/local/lib` for the run). Verify: `magick -version` shows `7.1.2 ... Q16-HDRI`.
 
-**Step 5 — Run the Go server from the `api/` directory** (paths like `logs/` and `./sqlite/` are
-relative to the working directory, so cwd **must** be `api/`):
+**Step 4b — Copy the private headers `make install` leaves behind.** Recent ImageMagick *git master*
+(e.g. `7.1.2-32 Beta`) has a public header that includes private ones — `MagickCore/pixel-accessor.h`
+pulls in `MagickCore/image-private.h`, which pulls in `MagickCore/quantum-private.h`, and so on — but
+`make install` installs only the public set. Every cgo compile of `gopkg.in/gographics/imagick.v3`
+then dies with `fatal error: MagickCore/image-private.h: No such file or directory`. Backfill the
+whole set from the source tree:
+
+```bash
+IM_SRC=$PWD                 # Step 4 left us in the ImageMagick source tree
+INC=/usr/local/include/ImageMagick-7
+for d in MagickCore MagickWand; do
+  for f in "$IM_SRC/$d"/*.h; do
+    b=$(basename "$f"); [ -f "$INC/$d/$b" ] || cp "$f" "$INC/$d/$b"
+  done
+done
+
+cd /home/user/receipt-wrangler/api
+go build ./...
+```
+
+Do **not** pipe that loop into `head` — the SIGPIPE kills it partway and you get a second, different
+missing-header error. Verify with `go build ./...` (not `go build ... | tail`, whose exit status is
+`tail`'s and so hides the failure).
+
+**Step 5 — Create `api/data/`** (gitignored via `/data/*`, so a fresh clone doesn't have it):
+```bash
+mkdir -p /home/user/receipt-wrangler/api/data
+```
+The server starts fine without it and only fails later, when something writes there — creating a
+group makes a per-group directory under it, so `POST /group/` returns **HTTP 500 "Error creating
+group"** with `mkdir .../api/data/<id>-<name>: no such file or directory` in `api/logs/app.log`.
+That takes down every e2e fixture that provisions a group (`provisionPermUser` and friends), which
+looks like a broken test rather than a missing directory.
+
+**Step 6 — Run the Go server from the `api/` directory** (paths like `logs/`, `data/` and `./sqlite/`
+are relative to the working directory, so cwd **must** be `api/`):
 ```bash
 cd /home/user/receipt-wrangler/api
 DB_ENGINE=sqlite DB_FILENAME=wrangler.db \
@@ -94,6 +143,19 @@ ImageMagick PDF-policy edit in `set-up-dependencies.sh` (it targets `/etc/ImageM
 source build's policy is at `/usr/local/etc/ImageMagick-7/policy.xml` and doesn't block PDF by
 default). Those only matter for exercising email-OCR / PDF-receipt processing, not for a running API.
 
+**Running the Go test suite in the sandbox — set `CHROMIUM_BINARY_PATH`.** Steps 1-4 above are enough
+to *compile* the module, but two tests additionally need a browser:
+`TestHtmlToPdfService_Render_BasicHtml` and `TestReportService_Generate_PdfDocument` drive the
+HTML-to-PDF pipeline through headless Chromium. `services/html_to_pdf.go` defaults to
+`/usr/bin/chromium`, which **does not exist** in this sandbox — the pre-installed Playwright build is
+at `/opt/pw-browsers/chromium`. Without the override both fail and `internal/services` reports FAIL,
+which looks like a code regression and is not one:
+```bash
+CHROMIUM_BINARY_PATH=/opt/pw-browsers/chromium go test -count=1 ./...
+```
+Do **not** run `playwright install` to get `/usr/bin/chromium` — the download is blocked, and the
+pre-installed binary works.
+
 ### Testing
 - `go test -v ./...` - Run all Go tests with verbose output
 - `go test -coverprofile=coverage.out -covermode=atomic -v ./...` - Run tests with coverage
@@ -111,8 +173,11 @@ default). Those only matter for exercising email-OCR / PDF-receipt processing, n
 - `./generate-client.sh mobile <output-dir>` - Generate Dart Dio client
 
 ### Go Toolchain
-- Requires **Go 1.25+** (the MCP `github.com/modelcontextprotocol/go-sdk` sets a 1.25 minimum).
-  Docker images and CI containers use `golang:1.25-trixie`.
+- Requires **Go 1.26.8+** — `api/go.mod` declares `go 1.26.8`, which `golang.org/x/crypto v0.56.0`
+  forces (it declares `go 1.26.0`). The MCP `github.com/modelcontextprotocol/go-sdk` sets a lower,
+  1.25 minimum.
+  Docker images and CI containers use `golang:1.26-trixie`, which currently resolves to the same
+  digest as `1.26.8-trixie` and so satisfies the directive without a toolchain download.
 
 ## Architecture Overview
 
@@ -147,6 +212,22 @@ default). Those only matter for exercising email-OCR / PDF-receipt processing, n
 - Supports multiple AI providers: OpenAI, Google Gemini, and Ollama
 - AI clients implement a common interface defined in `internal/ai/base_client.go`
 - Used for receipt data extraction and processing
+- **The configured URL is used verbatim.** `internal/ai/open_ai.go` treats
+  `ReceiptProcessingSettings.Url` as an OpenAI-compatible **base** url and appends only
+  `/chat/completions`, authenticating with `Authorization: Bearer <key>`. There is no
+  provider-specific rewriting: the client does **not** inspect the url, inject a deployment path, or
+  add an `api-version` query param. An empty url (the plain `OPEN_AI` type, which
+  `UpsertReceiptProcessingSettingsCommand.Validate` requires to be empty) falls back to go-openai's
+  `https://api.openai.com/v1`. Ollama is the same — `internal/ai/ollama.go` posts to the url exactly
+  as entered, with no suffix.
+- **Azure must be configured with its OpenAI-compatible endpoint**, i.e.
+  `https://<resource>.services.ai.azure.com/openai/v1` (with `Model` set to the *deployment* name), not
+  a bare resource origin. Earlier versions sniffed the url for the substring `azure` and switched
+  go-openai into Azure mode (`DefaultAzureConfig`), which rewrote the path to
+  `/openai/deployments/<model>/chat/completions` and pinned `api-version=2023-05-15`. That heuristic
+  was **removed**: it mangled the modern Foundry `/openai/v1` endpoint into a 404, and it could never
+  match an Azure resource behind a custom domain. Pinned by
+  `TestOpenAiGetChatCompletion_AzureUrlIsUsedVerbatim`.
 
 ### Configuration
 - Configuration loaded from JSON files in `config/` directory
@@ -182,6 +263,33 @@ would reject a non-`data/` path). The deliberate raw reads are the AI image read
 `services/receipt_processing.go` (the OpenAI and Gemini readers; Ollama reads via imagick), whose path may
 be a `temp/` file or a data file depending on the PDF branch — and the data-file case is now guaranteed
 contained at construction because `BuildFilePath` asserts containment on the full path.
+
+**Exception to the exception: a `temp/` path that came back out of an asynq payload.** The exemption
+above is for paths the *server builds*. A path read out of a task payload is JSON in Redis and is
+attacker-adjacent, so it must go through **`FileRepository.AssertWithinTempDirectory`** before anything
+opens or serves it (the activity source-file endpoints are the current callers). The data-scoped
+helpers cannot be used — they resolve against `data/` and would reject every temp path — so both
+checks now delegate to the shared **`utils.AssertWithinDir(baseDir, path)`**, with the base as a
+parameter because the roots genuinely differ: `data/` hangs off `os.Getwd()`, `temp/` off
+`config.GetBasePath()`, which `BASE_PATH` can override. Prefer a scoped wrapper over naming a base
+yourself, so a new trust boundary is always deliberate. The check is purely lexical (`filepath.Rel`,
+no `EvalSymlinks`), matching how every path here is constructed.
+
+**Reading is per-boundary; encoding for a browser is not.** The split above is
+about *getting* bytes safely, and it is genuinely different per root. Turning those
+bytes into something an `<img>` can render is identical everywhere, so it has one
+home: `FileRepository.BuildDisplayImageString`. Any handler returning an image to a
+client calls it — never `BuildEncodedImageString` directly, which encodes whatever
+it is handed and (via `GetFileType`) will happily label an unconverted PDF
+`image/jpeg`. See "Activity source files" below for the bug that cost.
+
+**`utils.ReadFile` returns `(nil, nil)` on ANY read error** — it swallows it. Never use it where a
+missing file must be an error: the caller sees empty bytes and a nil error and carries on. That cost
+a real bug in `wranglerasynq/email_process_handler.go`, where a deleted attachment sailed past the
+read (`hasAttachmentImage` is derived from the payload *string*, not the file) and, if processing then
+succeeded, persisted a **zero-byte receipt image carrying the real name and size**. That call site and
+the source-file endpoints use `os.ReadFile`; `utils.ReadDataFile` is the propagating equivalent for
+data paths.
 
 ## Testing Patterns
 
@@ -232,10 +340,53 @@ When working with tests in this codebase, follow these critical requirements:
   Operators running the API as a non-root user can opt back in by setting
   `CHROMIUM_SANDBOX=true`
 - External network resource loads (remote images, CSS, fonts) are
-  **blocked by default** to remove an SSRF / tracking-pixel surface.
-  Inline `data:` URIs and the file:// page itself remain allowed. To
+  **blocked by default** to remove an SSRF / tracking-pixel surface. To
   permit remote loads (useful when receipts depend on remote logos or
-  product imagery), set `CHROMIUM_ALLOW_EXTERNAL_RESOURCES=true`
+  product imagery), set `CHROMIUM_ALLOW_EXTERNAL_RESOURCES=true`. Because an
+  `about:blank` document (see below) never fetches network sub-resources at all,
+  the external mode instead serves the HTML from an **ephemeral loopback HTTP
+  server** (`127.0.0.1:0`, one per render, `defer`-closed right after) and
+  navigates to it, giving the document a real `http` origin so remote images
+  actually load; `chromedp.Navigate` waits for the load event, so slow remote
+  images finish before printing.
+- **External mode is SSRF-guarded: only PUBLIC hosts may load.** The email body is
+  attacker-controlled and the render now has a real `http` origin, so a naive
+  external mode would let `<iframe>`/`<img>` reach internal targets (verified: an
+  internal response was baked into the PDF). Sub-resource requests are therefore
+  intercepted via the CDP **Fetch** domain (`isRequestAllowed` in `html_to_pdf.go`)
+  and each is allowed or failed by its resolved address: the render's own loopback
+  page and inline `data:` URIs are allowed; loopback/private/link-local/multicast/
+  unspecified targets — `127.0.0.1:*`, `169.254.169.254` (cloud metadata), RFC1918,
+  `::1`, `fe80::/10`, `0.0.0.0` — plus the non-public ranges the stdlib `net.IP`
+  predicates miss (`ipIsInternal`'s `extraInternalNets`: `0.0.0.0/8`, CGNAT
+  `100.64.0.0/10` incl. Alibaba metadata `100.100.100.200`, benchmarking
+  `198.18.0.0/15`, reserved+broadcast `240.0.0.0/4`, NAT64 `64:ff9b::/96`) and the
+  `localhost` / `*.localhost` names (which chromium resolves to loopback itself,
+  never asking DNS) — and every non-`http(s)` scheme (incl. `file://`) are
+  refused. A URL blocklist can't express this (it can neither allow our own
+  loopback page while denying other internal hosts, nor catch a hostname that
+  resolves to an internal IP). Residual: **DNS rebinding** — the host is resolved
+  at check time and re-resolved by chromium at fetch time, so operators enabling
+  external mode in a cloud should also restrict egress at the network layer / use
+  IMDSv2. Regressions: `TestHtmlToPdfService_Render_ExternalMode_BlocksInternalSSRF`,
+  `TestHtmlToPdfService_Render_ExternalMode_EmbedsDataImage`, and the hermetic
+  policy unit test `TestIsRequestAllowed`.
+- **`file://` loads are ALWAYS blocked, in BOTH modes.** In the default mode the
+  HTML is injected into an `about:blank` page via `page.SetDocumentContent` rather
+  than being written to a temp file and navigated to as `file://<path>`. The email
+  body is attacker-controlled, so a `file://` document origin let it read local
+  files (other groups' receipt images under `data/`, logs, `/etc/passwd`) into the
+  PDF via `<iframe src="file:///…">`/`<img>` — even with JavaScript disabled.
+  `about:blank` (and the loopback `http` origin used in external mode) has no
+  local-file origin, so those sub-resources are cross-origin-blocked; `file://*`
+  is also on the default mode's network blocklist and denied by the external
+  mode's Fetch policy, as defense in depth (blocked in BOTH modes). Inline `data:`
+  URIs still load
+  (`SetDocumentContent` also sidesteps the data-URL length cap that motivated the
+  old temp-file approach) and decode synchronously, so the default path needs no
+  explicit load wait. Regressions:
+  `TestHtmlToPdfService_Render_BlocksLocalFileRead` and
+  `TestHtmlToPdfService_Render_ExternalMode_BlocksLocalFileRead`.
 - Implementation: `internal/services/html_to_pdf.go` (HtmlToPdfService.Render)
 - The rendered PDF is saved on the receipt as a `FileData` and routed
   through the existing `repositories.ConvertPdfToJpg` pipeline so vision and
@@ -302,7 +453,20 @@ will be dropped in a later release.
   mirrored in the `swagger.yml` `Permission` enum. `permissions/registry_test.go` enforces that the
   registry and the swagger enum stay in sync.
 - **Adding a permission:** add the constant + `Descriptor` in `registry.go`, add the key to the
-  `Permission` enum in `swagger.yml`, then regenerate clients (see "API Client Generation").
+  `Permission` enum in `swagger.yml`, then regenerate clients (see "API Client Generation") —
+  **including `mobile/api/`, in the same change**. A `ScopeGroup` key is picked up automatically by
+  the seeded **Legacy Owner** (`LegacyGroupOwnerKeys()` = every group-scope key) on the next boot, so
+  it lands in essentially every user's `AppData` the moment the server upgrades.
+- **Catalog vs. data — do not `$ref` the `Permission` enum onto `AppData`.** The enum is the
+  **catalog** of which permissions exist (`Role.permissions`, `UpsertRoleCommand.permissions`,
+  `PermissionDescriptor.key`, the `permission` query param). A user's **effective** permissions
+  (`AppData.appPermissions` / `.groupPermissions`) are server-resolved **data** and ride as plain
+  `type: string`. Generated clients render an enum as a *closed* set — the Dart `EnumClass` throws on
+  an unknown value and fails the entire `AppData` parse, which hard-fails login on every
+  already-released mobile build. That shipped twice (2026-07-24 `group.members.create`; 2026-08-06
+  `group.members.grants.update`). Granted strings may also be **wildcards** (see "Matcher"), which an
+  enum cannot represent. Pinned by `permissions/registry_test.go` →
+  `TestAppDataEffectivePermissionsAreUntypedStrings`.
 
 ### Matcher
 
@@ -322,7 +486,13 @@ will be dropped in a later release.
   `GroupRoleTagGrant` (composite-PK join rows) for per-role category/tag visibility. A group role
   with **no** grant rows is **unrestricted** (sees every category/tag); a non-empty grant set
   restricts members to exactly those ids — restriction is opt-in, so legacy/system roles (no grants)
-  keep seeing everything and no data migration is needed. Categories/tags are **global** (no
+  keep seeing everything and no data migration is needed.
+  - **Per-member grants** (`GroupMemberCategoryGrant` / `GroupMemberTagGrant`, composite-PK
+    `{UserID, GroupID, CategoryID|TagID}`) are a second, finer layer hanging off the **membership**,
+    for the case a shared role cannot express ("Alice sees Child A and B, Bob sees Child C"). The two
+    layers compose by **intersection** — the role is a ceiling, the member narrows within it. See
+    "Category/tag grant resolution" below for the full rule, the fail-closed flags, the dedicated
+    write endpoint and its own permission, and the grant-row lifecycle hazards. Categories/tags are **global** (no
   `GroupId`); a grant is a per-group-role slice of the global pool. CRUD persists/returns the grants
   and `PermissionService` resolves them (see "Category/tag grant resolution" below); wiring the
   resolved sets into AppData delivery and request enforcement is rolled out in later slices.
@@ -381,8 +551,9 @@ will be dropped in a later release.
   Owner** (the group VIEWER / EDITOR / OWNER tiers; Owner = every group permission). The sets live in
   `permissions/legacy.go` (`Legacy*Keys()` helpers) and were derived from the actual handler-level
   gating, not the desktop UI presets. **Deliberate exceptions** (Legacy User omits these): `app.users.read`
-  — it gates only the admin `GET /user/` listing, which no client calls (user dropdowns read from AppData via
-  `app.account.read`), so granting it would only expose the admin "Manage Users" page to normal users; and
+  — it gates the admin user listing (the unpaged `GET /user/` **and** the paged `POST /user/getPagedUsers`
+  that the desktop "Manage Users" page reads from); user dropdowns instead read from AppData via
+  `app.account.read`, so granting it would only expose the admin "Manage Users" page to normal users; and
   `app.categories.read` / `app.tags.read` — omitted as part of the category/tag grant lock-down, since they
   gate the GLOBAL category/tag lists; normal users now get only the per-group filtered catalogs (the
   `app.categories.create` / `app.tags.create` permissions are retained for inline creation); and
@@ -428,6 +599,46 @@ will be dropped in a later release.
   groups (and explicit role choices in the admin user/group-member forms) are assigned via the
   modern-role authoring flow — see "Modern role assignment in authoring flows" under "Enforcement
   status".
+
+### Skipping the personal group per app role
+
+- Every new user normally gets **two** groups in `UserRepository.CreateUser`: the personal
+  `"My Receipts"` group and the virtual `"All"` aggregate group (`IsAllGroup`, which backs the
+  dashboard's all-receipts view). For accounts that are only ever meant to live in a few specific
+  shared groups, the personal group is dead weight that accumulates as clutter in group management.
+- **`AppRole.SkipDefaultGroupCreation`** (`models/app_role.go`, `not null;default:false`) opts a
+  role's new users out of the personal group. The `"All"` group is **always** created, so the
+  account still has a working dashboard landing page and sees receipts from groups an admin adds it
+  to. AutoMigrate adds the column with default `false`, so existing roles/installs are unchanged —
+  **no data migration**.
+- **App-scope only**, mirroring the group-scope-only `seesAllMembers` in the opposite direction:
+  `UpsertRoleCommand.Validate` rejects it on GROUP scope (`skipDefaultGroupCreation` error key), and
+  `structs.RoleView` serializes `false` for every group role. Carried on `swagger.yml` for both
+  `Role` and `UpsertRoleCommand`.
+- **Creation-time only.** `CreateUser` resolves the flag from the user's just-assigned
+  `AppRoleID` via `UserRepository.appRoleSkipsDefaultGroup` → `RoleRepository.AppRoleSkipsDefaultGroup`
+  (a single-column read, mirroring `GetGroupRolePaidByConfig`) and skips only the `"My Receipts"`
+  `CreateGroup` call. Assigning the role later — or unchecking the box — never adds or removes a
+  group for an existing user. Resolution is **best-effort** in the same way as `resolveAppRoleId`: a
+  nil or **missing** role (`gorm.ErrRecordNotFound`) falls back to creating the group rather than
+  failing user creation, while any *other* lookup error propagates and rolls the creation back — a
+  transient DB failure must not silently decide which groups an account is created with. (The
+  missing-role branch is defensive: `User.AppRoleID` is an `OnDelete:RESTRICT` FK, so a non-nil id
+  always references a live row.)
+- Because the flag lives on the role, it applies at **every** creation path — admin create (explicit
+  `appRoleId`) and public self-signup (which uses the configured **default** app role, so flagging
+  the default makes signups skip the personal group too). The bootstrap admin resolves to Legacy
+  Admin, a seeded system role whose column is the `false` zero value and which the UI opens
+  read-only, so it is never affected.
+- `UpdateAppRole` writes the column through the **map form** `Updates` — GORM's struct form skips
+  zero-value bools, which would leave a toggled-off flag stuck on (the same reason
+  `UpdateGroupRole` uses it).
+- Tests: `commands/upsert_role_command_test.go` (APP accepted / GROUP rejected),
+  `repositories/roles_test.go` (`TestAppRoleSkipDefaultGroupCreationRoundTrips` incl. the
+  toggle-off case, `TestGetAllRolesReturnsSkipDefaultGroupCreation`), `repositories/users_test.go`
+  (`TestCreateUserSkipsDefaultGroupForFlaggedAppRole` — only `"All"` remains — and
+  `TestCreateUserCreatesDefaultGroupForUnflaggedAppRole`), and `services/roles_test.go`
+  (service round-trip + group roles never carrying it).
 
 ### Legacy role assignment (one-time data migration)
 
@@ -500,19 +711,101 @@ will be dropped in a later release.
 
 ### Category/tag grant resolution (`PermissionService`)
 
-- `services/grant.go` resolves a user's allowed category/tag ids for a group:
-  `GetGroupCategoryIdsForUser` / `GetGroupTagIdsForUser` return `(allowedSet, unrestricted, err)`,
-  where **`unrestricted == true` means see-all** (the role grants nothing for that resource) and the
-  set is then `nil`. A non-member, or a member whose group role has no grants, is **unrestricted** —
-  grants only *narrow* access within an already-permitted group; they never *grant* access (the
-  handler permission gate is the access control). Categories and tags are independent (a role may
-  restrict one and not the other). `GetVisibleCategoriesForUser` / `GetVisibleTagsForUser` filter a
-  full category/tag slice to the visible subset (pass-through when unrestricted) — used by AppData.
-- Backed by a grant cache (`services/grant_cache.go`) keyed by **group-role id** (grants are
-  group-only), same generation-counter invalidation as the permission cache, evicted in
-  `RoleService.UpdateRole` / `DeleteRole` for group scope. Only a role's grant *lists* are cached;
-  the user's role *assignment* is resolved fresh each call. A category/tag deleted out from under a
-  cached grant id is benign — a stale id simply never matches a real row when filtering.
+Category/tag visibility resolves from **two grant layers**, composed by **intersection**:
+
+1. **Group role grants** — `GroupRoleCategoryGrant` / `GroupRoleTagGrant`, shared by everyone holding
+   the role. This is the **ceiling**.
+2. **Group MEMBER grants** — `GroupMemberCategoryGrant` / `GroupMemberTagGrant`, composite-PK
+   `(UserID, GroupID, CategoryID|TagID)`, per individual. This **narrows within** the ceiling.
+
+The member layer exists because a role is shared and so cannot express "Alice sees Child A and B, Bob
+sees Child C" — the foster-care requirement. It is scoped to the **membership**, not the user, because
+categories are global but visibility always resolves in a group context: a flat per-user list would
+follow the member into unrelated groups and blank their catalog there.
+
+**Why intersection, not union.** Union can only ever *add*, so any role carrying grants would floor
+every member at the role's full set and an individual assignment could never *restrict* anyone —
+which is the entire point of the member layer. Intersection also keeps a role an auditable ceiling
+("no holder of this role can see outside its set") and makes role grants safe to widen, since widening
+a role never widens an individually-assigned member.
+
+- `services/grant.go` — `resolveEffectiveGrants(userId, groupId)` composes the layers and returns an
+  `effectiveGrantSet`; `composeGrantLayer` applies the rule per resource:
+
+  ```text
+  role requires individual && member unconfigured -> see nothing (fail closed)
+  effective = ALL
+  if the role grants a non-empty set          -> effective ∩= role set
+  if the membership opted into restriction    -> effective ∩= membership set
+  if neither narrows                          -> unrestricted
+  ```
+
+  `GetGroupCategoryIdsForUser` / `GetGroupTagIdsForUser` keep their `(allowedSet, unrestricted, err)`
+  signature, so **every existing call site inherits the member layer with no change** —
+  `grant_filter.go`, AppData (`auth.go`), the AI candidate lists (`receipt_processing.go`),
+  `receipts.go`, and MCP `tools.go`. **`unrestricted == true` means see-all** and the set is `nil`; a
+  `false` flag with an **empty** set means **see nothing**. A non-member is unrestricted — grants only
+  *narrow* within an already-permitted group; they never *grant* access (the handler permission gate is
+  the access control). Categories and tags are independent. `GetVisibleCategoriesForUser` /
+  `GetVisibleTagsForUser` filter a full slice to the visible subset (pass-through when unrestricted).
+- **Fail-closed flags.** `GroupMember.CategoryGrantsRestricted` / `TagGrantsRestricted`
+  (`json:"-"`, derived on save from the *submitted* sets) keep a configured membership restricted after
+  its grant rows are emptied by a category deletion cascade, instead of silently widening back to the
+  role's set. Same purpose and pattern as `GroupRoleDefinition.PaidByVisibilityRestricted`.
+- **`RequiresIndividualCategoryGrants` / `RequiresIndividualTagGrants`** on `GroupRoleDefinition`
+  (default **false**, so existing roles are unchanged) make per-member assignment mandatory: a member
+  holding the role with no individual grants sees **nothing** rather than the role's set — so
+  forgetting to assign a newly added member fails closed. Carried on `UpsertRoleCommand`/`RoleView`,
+  group scope only (rejected on APP), persisted by
+  `RoleRepository.SetGroupRoleIndividualGrantConfig` — a **separate** method from
+  `CreateGroupRole`/`UpdateGroupRole` (whose positional signatures already end in two bools; appending
+  two more would make four adjacent transposable bools), mirroring
+  `ReplaceGroupRoleReportTemplateGrants`.
+- **Caching.** The role layer is cached (`services/grant_cache.go`, keyed by **group-role id**, same
+  generation-counter invalidation as the permission cache, evicted in `RoleService.UpdateRole` /
+  `DeleteRole`); the `requiresIndividual*` flags ride that entry. The **member layer is deliberately
+  NOT cached** — one indexed lookup, resolution is already batched once per group per pass by
+  `newReceiptGrantFilter`, and caching would add a second invalidation surface across four write paths.
+  A user's role *assignment* is resolved fresh each call. A category/tag deleted out from under a
+  cached grant id is benign — a stale id never matches a real row when filtering.
+- **Write surface: `PUT /group/{groupId}/member/{userId}/grants`** (`handlers.UpdateGroupMemberGrants`
+  → `GroupService.UpdateMemberGrants`), body `{categoryGrants, tagGrants}`. A **dedicated endpoint,
+  not a field on the group-member upsert**, for two reasons: it carries its own permission
+  **`group.members.grants.update`** (separate from `group.members.update`, so a restricted member who
+  can manage the roster cannot thereby widen their own visibility — the feature's main escalation
+  hole), and it keeps grant writes off `UpdateGroup`'s wholesale roster replace, where the user form
+  and group form posting partial rosters would clobber each other. Both ids come from the **URL only**.
+  Submitted ids are checked for existence (`ErrInvalidGrant` → 400) and against the member's role
+  ceiling (`GrantCeilingViolation`, naming the offending ids → 400), which is what makes the
+  empty-intersection state unreachable through the API. `Legacy Owner` picks the permission up
+  automatically (`LegacyGroupOwnerKeys()` = every group-scope key) via add-only seed reconciliation.
+- **Lifecycle (the sharp edge).** Grant rows are keyed by `(user, group)` with **no FK to
+  `group_members`**, and the teardown paths delete memberships with a raw `tx.Delete` (no Go-side
+  cascade; SQLite does not enforce FKs unless `PRAGMA foreign_keys=ON` per connection). Orphaned rows
+  would be **silently re-adopted when a removed user rejoins the same group**, restoring revoked
+  visibility with nothing in the UI to show it. So `repositories/group_members.go` exposes
+  `DeleteMemberGrants` / `DeleteMemberGrantsForUser` / `DeleteMemberGrantsForGroup` /
+  `DeleteOrphanedMemberGrants`, called explicitly from `UserService.DeleteUser`,
+  `GroupService.DeleteGroup`, and `GroupRepository.UpdateGroup` (after its association replace, phrased
+  as "whatever no longer has a membership" so it is correct regardless of how GORM's replace behaves,
+  and leaves retained members untouched). **Do not remove these calls.**
+- **`UpdateGroup` must carry the restriction flags forward.** It persists `GroupMember` rows rebuilt
+  from the request command (which carry both flags at their **zero value**) twice — once via the
+  `FullSaveAssociations` `Updates`, once via the association `Replace`. So `UpdateGroup` reads
+  `GetMemberGrantFlagsForGroup` **at the very top of the transaction, before either write**, and
+  re-applies each retained member's flags to the rebuilt structs. Without it, a plain group edit —
+  even just a rename — clears every member's restriction and silently widens them back to their
+  role's full set. The flags are **carried forward, not recomputed** from the surviving grant rows: a
+  membership configured and then emptied by a category deletion must stay restricted, which is the
+  whole reason the flags exist apart from the rows. Pinned by
+  `repositories/group_member_grants_test.go` → `TestUpdateGroupPreservesRetainedMemberGrantFlags`.
+- **`GroupMember.CategoryGrants` / `TagGrants` are transient view fields (`gorm:"-"`)**, populated on
+  read by `LoadMemberGrantsForGroup(s)` at the roster serialization boundary (AppData,
+  `GetGroupsForUser`, `GetGroupById`) — deliberately **not** GORM associations, which would put the
+  grant tables inside `UpdateGroup`'s wholesale association write.
+- Tests: `services/group_member_grants_test.go` (intersection matrix incl. the disjoint "see nothing"
+  case, the fail-closed toggle, restriction surviving a category delete, **no resurrection on rejoin**,
+  orphan cleanup keeping retained members, and the endpoint's ceiling/existence/non-member rejections).
 - `services/grant_filter.go` is the **single** shared enforcement mechanism, reused by every read and
   write surface: `FilterReceiptCategoriesTags` / `FilterReceiptCategoriesTagsForReceipt` strip a
   receipt's `Categories`/`Tags` in place to the visible subset (resolving each group's grants at most
@@ -540,6 +833,18 @@ will be dropped in a later release.
   **receipt-level only** — receipt items have no stable id across an update (they are deleted and
   recreated), so hidden *item-level* categories/tags cannot be matched back and are dropped when a
   restricted user edits a receipt. Closing that needs item identity (a separate change).
+- **Moving a receipt between groups authorizes the DESTINATION.** `UpdateReceipt` runs through
+  `HandleRequest` with `ReceiptId` set, which only verifies `group.receipts.update` on the receipt's
+  **current** group. Both clients let a user change a receipt's group on edit, so when
+  `command.GroupId != currentReceipt.GroupId` the handler additionally requires `group.receipts.create`
+  on the destination group (403 otherwise) and runs the grant / member-visibility **selection** checks
+  against the destination (the group the receipt will live in). Without this a member with update rights
+  in one group could relocate receipts into any group. The **synthetic All group is rejected as a
+  destination** (400) *before* that create-check: a caller's All-group membership carries the default
+  unrestricted role, so its `group.receipts.create` would otherwise satisfy the check and persist the
+  receipt into the cross-group view under a role that sidesteps every real group's grant / visibility
+  controls. Tests: `handlers/receipt_group_move_authz_test.go` (incl.
+  `TestUpdateReceipt_MoveToAllGroupRejected`).
 - **AI prompt:** `ReceiptProcessingService` carries a `UserId` (the user who triggered processing; 0
   for system-initiated, e.g. email polling). When set together with a `Group`,
   `getCategoriesString` / `getTagsString` restrict the candidate categories/tags fed to the model to
@@ -574,6 +879,29 @@ Because paid-by hides the **whole** receipt (not just fields), enforcement diffe
   `totalCount` stays correct — single-group adds `paid_by_user_id IN (allowed)` (empty restricted set
   ⇒ `IN (0)` no-match sentinel); the all-group view builds a per-group **disjunction**
   `(group_id=G AND paid_by_user_id IN s_G) OR (group_id=G2) …` so each group applies its own role.
+- **All-group expansion is gated per group, not by All-group membership.** The synthetic "All" group
+  is a real membership where the caller holds an unrestricted role, so expanding it to every membership
+  without re-checking each group let a member read receipts (and category/tag names) in groups whose
+  role denies it. `GetPagedReceiptsByGroupId` now takes a `GroupReadableResolver`
+  (`PermissionService.GroupPermissionResolver(userId, perm)`, cache-backed) and, for the All view,
+  drops any group where the caller lacks the permission its **direct** single-group path requires
+  (`group.receipts.read` for list/export/summary, `group.reports.read` for reports, `group.widgets.read`
+  for the pie chart) — before the `group_id IN` scope, the paid-by disjunction, and the count. The
+  `GroupReadableResolver` and `CategoryTagVisibilityResolver` must be passed together for the All view
+  (`GetPagedReceiptsByGroupId` fails closed if only one is supplied) — the read gate without the
+  category/tag resolver would let a category/tag filter fall through to the flat, group-unscoped subquery.
+  The same per-group read
+  filter is applied in `SearchReceiptsForUser` (search is gated on `app.receipts.search`, which does
+  not grant per-group read) and in `GetAmountOwedForUser`'s All aggregation. It also carries a
+  `CategoryTagVisibilityResolver`: for the All view the category/tag **filter** is applied as a
+  per-group disjunction (`applyAllGroupCategoryTagFilter`) so a filter on a category id only matches
+  receipts in groups where that id is visible to the caller — closing a probe where the flat,
+  group-unscoped filter subquery matched a restricted category across groups (`IntersectReceiptFilterWithGrants`
+  is a no-op for the All view because the All membership resolves unrestricted). AppData's
+  `groupCategories`/`groupTags` for the All group is likewise the **union** of the caller's per-real-group
+  visible sets, not the whole pool. Tests: `repositories/receipt_all_group_gate_test.go`,
+  `services/auth_test.go` (`TestGetAppData_AllGroupCatalogIsUnionOfRealGroups`), `handlers/users_test.go`
+  (`TestGetAmountOwedForUserAllGroupExcludesUnreadableGroup`).
 - **Single receipt + dependent reads** (`HandleRequest` chokepoint): the `ReceiptId`/`ReceiptIds`
   blocks also select `paid_by_user_id`; `enforcePaidByVisibility` denies **403** when any resolved
   receipt is outside the caller's allowed set. This one place covers `GetReceipt`, image
@@ -622,7 +950,13 @@ name/settings edit never trips it):
   current group permissions (resolved via `GetGroupPermissionsForUser`; a `nil`/empty role is always
   wieldable). This is what actually prevents self-escalation, independent of the CRUD gate.
 
-The three `group.members.*` permissions are group-scoped registry entries; **Legacy Owner** holds them
+A fourth, **separate** permission `group.members.grants.update` gates per-member category/tag
+assignment (`PUT /group/{groupId}/member/{userId}/grants`). It is deliberately **not** folded into
+`group.members.update`: bundling them would let a restricted member who can manage the roster edit
+their own grants and lift the very restriction the feature enforces. See "Category/tag grant
+resolution" above.
+
+The four `group.members.*` permissions are group-scoped registry entries; **Legacy Owner** holds them
 (it is the full group scope), Legacy Editor/Viewer do not (member management was historically
 owner-only). Upgraded installs — whose Legacy Owner was seeded before these keys existed — pick them
 up on the next boot from `SeedSystemRoles`' add-only reconciliation (see "Seeded system roles"
@@ -630,6 +964,119 @@ above); no dedicated data migration is needed, and
 `repositories/seed_roles_test.go` → `TestSeedSystemRolesBackfillsGroupMemberPermissions` pins that
 upgrade path. Tests: `handlers/group_member_authorization_test.go` (the PoC + happy paths) and
 `services/group_member_authorization_test.go` (the guard's CRUD/ceiling matrix).
+
+### Member isolation (presence privacy)
+
+A group can be flagged **`IsolateMembers`** (`models.Group`): within it, a member cannot discover that
+other members exist — not through the user directory, the group roster, receipts, comments, activities,
+settlement, or notifications. A group role flagged **`SeesAllMembers`** (`models.GroupRoleDefinition`)
+is the **supervisor** exemption: its holders see every member of an isolated group **and** are visible
+to every member. Both default `false`, so existing groups/roles/installs are unchanged (AutoMigrate adds
+the columns; no data migration).
+
+**Isolation is resolved PER GROUP — "isolated means isolated."** Visibility is a function of
+**(viewer, group)**, never a union across the viewer's groups. Inside an isolated group you see only
+yourself + that group's supervisors, regardless of any other group you belong to. Co-members become
+visible **only** through a shared **non-isolated** group (open means open) — and even then only on that
+open group's own surfaces; the isolated group never leaks presence or settlement. This is deliberately
+allowed to leave a cross-group aggregate incomplete (a settlement/report total may omit a hidden group's
+dollars) — the truthful isolation guarantee wins.
+
+**`UserVisibleInGroup(viewerId, targetId, groupId)`** is the single-row form of the
+per-group resolver below, for a gate on one record rather than a batch. It exists
+because that closure was being re-inlined per call site (the comment-notification
+fan-out, and again in its test) while the in-package equivalent,
+`groupVisibilityResolver.isVisible`, is unexported and memoized for batch use. Use
+it for any per-request check; use the resolvers below when filtering a set.
+
+**Two resolvers** (`services/member_visibility.go`):
+- **`GetVisibleUserIdsForUserInGroup(viewerId, groupId)`** → `(set, unrestricted, err)` — the per-group
+  resolver used by **every group-scoped surface** and by settlement. `app.users.read` ⇒ unrestricted; a
+  **non-isolated** group ⇒ unrestricted; an isolated group where the viewer holds a **`SeesAllMembers`**
+  role ⇒ unrestricted; an isolated group where the viewer is a **plain member** ⇒ `{self} ∪` that group's
+  supervisors; a **non-member of an isolated group ⇒ `{self}` restricted** (an isolated roster must not
+  leak to a non-member reader — e.g. an `app.groups.read` holder hitting `GetGroupById` via
+  `OrAppPermissions` — who lacks the `app.users.read` directory exemption); a **non-member of a
+  non-isolated group ⇒ unrestricted** (open group, preserving the paid-by / reporting contract for
+  non-members, whose surfaces gate membership at the handler). `GetViewerGroupRow` LEFT-JOINs `groups` so
+  the isolate flag + membership are known even for a non-member. Not cached; a batch spanning groups
+  memoizes per group via `groupVisibilityResolver` / `visibleUserIdsByGroup` (the latter resolves the
+  AppData roster path in two queries total).
+- **`GetVisibleUserIdsForUser(viewerId)`** (the original UNION resolver, unchanged) is now used by
+  **exactly one** surface: the flat `appData.users` directory (`FilterVisibleUserViews`). The union is
+  mathematically the union of the per-group sets, so it already honors isolation (it never lists a peer
+  you share only an isolated group with) — it is the correct name-resolution table, since the roster
+  (`GroupMember`) carries only a `userId` and clients resolve the display name/avatar from this flat list.
+
+**Read enforcement — every surface a user identity can reach a client (all PER GROUP):**
+- **Directory** — `appData.users` uses the union resolver (above). **Rosters** — each group's
+  `GroupMembers` is filtered with **its own** per-group set at the serialization boundary
+  (`services/auth.go` AppData via `FilterGroupMembersForGroups`, the `GET /group/{id}` handler via
+  `FilterGroupMembersForGroup`, and MCP `list_groups`). **Not** inside `GroupService.GetGroupsForUser` /
+  `UserRepository.GetAllUserViews` — those also feed internal accounting and receipt processing.
+- **Receipts (row visibility)** — the per-group visible set is intersected into the paid-by allowed set
+  inside `paidByAllowedForGroup` (`services/paid_by_filter.go`), so a receipt whose `paid_by_user_id` is
+  non-visible **in its own group** disappears from every read surface at once (paged list, single GET,
+  search, CSV export, duplicate, `GetReceiptsForGroupIds`, pie chart, report data).
+- **Field masking** — `services/member_masking.go` resolves per `receipt.GroupId` (memoized across a
+  batch) and **nulls** user-reference fields whose id ∉ that receipt's group's visible set:
+  `BaseModel.CreatedBy`/`CreatedByString` on the receipt and every nested entity, and item/linked-item
+  `ChargedToUserId`. Fields are nulled, **not** replaced with `(Restricted)` — presence must be hidden,
+  not announced. `paid_by_user_id` is never masked (row visibility already guarantees a visible payer).
+- **Comments / activities (row drop)** — comments authored by a non-visible user are dropped;
+  `GetActivitiesForGroups` drops rows whose `RanByUserId` is non-visible **in that activity's group**.
+  Activity visibility is filtered **in the SQL query, before `COUNT`/`LIMIT`**, via
+  `applyActivityVisibilityDisjunction` (`repositories/system_task.go`) — a per-group disjunction mirroring
+  `ReceiptRepository.ApplyPaidByDisjunction`, fed by `PermissionService.ActivityVisibilityResolver`
+  (the activity analogue of `PaidByListResolver`). So `TotalCount` and the returned page both reflect only
+  visible rows with DB-side `LIMIT/OFFSET` preserved — a restricted member cannot infer hidden-peer
+  activity from the total, and there is no unpaged in-memory fetch. The comment-notification fan-out has
+  a **non-isolated fast path** (`recipientsWhoCannotSeeAuthor` reads the group's `isolate_members` once
+  and skips the roster fetch + per-member resolver loop when the group isn't isolated).
+- **Settlement** — `GetAmountOwedForUser` resolves visibility **per the receipt's group as it folds each
+  item** into the counterparty balance map: a contribution counts only if the counterparty is visible in
+  that receipt's group. So an isolated group contributes nothing about a hidden member even in the
+  all-groups aggregate, while a shared open group contributes normally. This overrides the endpoint's
+  paid-by exemption for isolated viewers.
+- **Notifications** — the comment add/reply fan-out (`repositories/comments.go`, injected
+  `AuthorVisibilityResolver func(authorId, recipientId, groupId)`) suppresses delivery to a recipient who
+  can't see the comment author in the receipt's group.
+- **Reporting + pie** — no dedicated code: reports read only through `ReportDataService.Rows` →
+  `PaidByListResolver` (per group), called once per group by `ReportService.loadRows`, so an isolated
+  group contributes only visible-payer receipts and an open group contributes everyone; the only
+  user-identity a report row exposes is `paid_by` (row-hidden, never masked).
+
+**Write-side guards:**
+- **Receipt upsert** — `enforceReceiptMemberVisibilitySelection` rejects a `paidByUserId` or item
+  `chargedToUserId` outside the creator's visible set **for the receipt's group** (403).
+- **Update preservation** — `enforceReceiptChargedToPreservation` blocks a restricted editor from saving
+  a receipt whose **stored** items are charged to a member they can't see in that group: the wholesale
+  item replace + no stable item identity would silently drop the hidden charge, so the edit is rejected
+  rather than lose data. **Known limitation** (same as item-level category/tag grants): preserving the
+  hidden charge needs stable item identity — a separate change.
+- **No member-invitation visibility guard.** Under per-group isolation, adding a user to a group never
+  widens visibility in any *other* group (and adding to an isolated group where the caller is a plain
+  member doesn't make the added user visible to the caller), so the old union-contamination attack is
+  gone. The dedicated member-visibility invite checks were **removed**; the GHSA-89mm CRUD-gate +
+  privilege-ceiling guard in `AuthorizeGroupMemberChanges` is untouched.
+
+Co-members are visible only through a shared **non-isolated** group; an isolated group never leaks
+presence or settlement — no cross-group operational discipline is required (per-group makes a shared open
+group safe by design).
+
+**Persistence:** `isolateMembers` rides `UpsertGroupCommand` → `CreateGroup`/`UpdateGroup` (the update
+uses an explicit `Update("isolate_members", …)` so a toggle-off past the association `Omit` sticks);
+`seesAllMembers` rides `UpsertRoleCommand` → `CreateGroupRole`/`UpdateGroupRole` and is surfaced on
+`RoleView`, group scope only (mirroring `includeOwnPaidReceipts`). Both are on `swagger.yml`.
+
+**Tests:** `services/member_visibility_test.go` (union + per-group resolver matrix, incl. the headline
+"open-group peer hidden inside the isolated group"), `services/member_isolation_receipt_test.go`,
+`services/report_data_test.go` (reporting isolation), `handlers/receipt_member_isolation_test.go`,
+`handlers/receipt_charge_preservation_test.go`, `handlers/system_task_test.go` (per-group activity drop),
+`handlers/users_test.go` (settlement incl. the cross-group isolated/open case),
+`services/member_visibility_notifications_test.go`, plus persistence round-trips in
+`repositories/groups_test.go` / `repositories/roles_grants_test.go` / `services/roles_test.go` /
+`commands/upsert_role_command_test.go`.
 
 ### Enforcement status
 
@@ -643,6 +1090,64 @@ Authorization is enforced centrally in `HandleRequest` (`handlers/generic_handle
 - `OrAppPermissions []string` — an app-scoped fallback; holding **any** of them bypasses the group
   check (e.g. an administrator viewing a group they aren't a member of). Replaces the old
   `OrUserRole`.
+
+**`app.groups.delete` — deleting any group (Group Management):** the app-scoped counterpart to
+`app.groups.read`. Reading all groups without being able to remove the abandoned/garbage ones left
+admins unable to clean up, so `DeleteGroup` declares `OrAppPermissions: [app.groups.delete]` beside
+its group-scoped `GroupPermissions: [group.delete]` — a holder deletes a group they are not a member
+of, while an ordinary member still deletes their own via `group.delete`. Legacy Admin auto-includes
+it (its set is every app permission); **Legacy User deliberately does not**. It is inert on its own:
+the delete control lives on the Manage Groups page, which is reached behind `app.groups.read`. The
+`IsAllGroup` → 400 guard is unaffected, so the virtual "All" group stays undeletable for everyone.
+
+**`app.custom-fields.update` — editing a custom field (Custom Fields):** custom fields could be
+created and deleted but never corrected, and deleting one also deletes every `CustomFieldValue`
+attached to it across every receipt — so a typo in a name or an option was unfixable. `PUT
+/customField/{id}` (`UpdateCustomField`, gated by `AppPermissions: [app.custom-fields.update]`) edits
+the **name, description, and select options**. Legacy Admin auto-includes it (its set is every app
+permission); **Legacy User deliberately does not** — it holds custom-fields create + read, matching
+categories and tags, where create is granted and update/delete are not. No seed change and no data
+migration: `SeedSystemRoles`' add-only reconciliation delivers it to an upgraded install on the next
+boot.
+
+Two invariants make the edit safe, enforced by `UpsertCustomFieldCommand.ValidateUpdate` (a **pure**
+companion to `Validate` that takes the currently-stored `models.CustomField`, so the update rules sit
+beside the create rules rather than in the handler) and re-asserted by the repository:
+
+- **The type is immutable.** A `CustomFieldValue` stores its data in one of five type-specific columns
+  (`StringValue` / `DateValue` / `SelectValue` / `CurrencyValue` / `BooleanValue`), so re-typing a
+  field would silently mis-column every value already recorded against it. A differing `type` is a
+  **400** (`{"type": "Type cannot be changed"}`), and `UpdateCustomField` never puts the column in its
+  `Updates` map, so a caller that skips validation still cannot change it.
+- **Options are renamed or appended, never removed.** `CustomFieldValue.SelectValue` holds an option
+  **id**, so options are matched by a new `UpsertCustomFieldOptionCommand.Id` (zero = append) and a
+  rename keeps the id — every receipt that picked it still resolves, now showing the corrected text.
+  An option the command **omits is left untouched, not deleted**: that is the no-orphan guarantee, and
+  it also makes a stale form (another admin appending an option meanwhile) a no-op rather than a 400.
+  An option id the field does not own is a **400**, and the repository's option update is additionally
+  scoped `WHERE id = ? AND custom_field_id = ?` so a foreign option is unwritable even if that check
+  raced.
+- **An option value is required and blank-checked after trimming.** Because a rename keeps the option
+  id, an empty value would preserve the id and silently blank the label on every receipt whose
+  `SelectValue` points at it. The rule lives in `Validate()` — **not** `ValidateUpdate()` — so create
+  and update share one check (`UpdateCustomField` runs `Validate` first); it therefore also closes the
+  older hole where a SELECT field could be *created* with blank options. `strings.TrimSpace` is used so
+  the server agrees with the desktop's `trimmedRequiredValidator()`; the stored value is not trimmed.
+
+`UpdateCustomField` uses the **map form** of `Updates` so a cleared description actually clears (the
+struct form skips zero values — the same reason `UpdateAppRole` does), and maps
+`gorm.ErrRecordNotFound` to **404**. (The older `GetCustomFieldById` handler still returns 500 for a
+missing id; its test pins that and it was left alone.) `UpsertCustomFieldOptionCommand.CustomFieldId`
+also had its json tag corrected from `custom_field_id` to `customFieldId` to match swagger — it is
+never trusted either way, since create derives the FK from the parent association and update from the
+request URL.
+
+**`middleware.CanDeleteGroup` is permission-aware.** That middleware (`middleware/group.go`, wrapping
+only the DELETE route) rejects when the **caller** belongs to ≤1 group — self-protection so a user
+can't delete themselves out of every group. It ignores `{groupId}` and runs *before* `HandleRequest`,
+so it would have blocked an administrator cleaning up a group they aren't in. It now short-circuits
+for holders of `app.groups.delete` (resolved from the DB via `PermissionService`; a lookup error
+fails closed with 500). It is **not** the authorization gate — that is still `HandleRequest`.
 
 `HandleRequest` resolves the caller's effective permissions from the database (never the JWT) and
 denies with `403` on any failure. The legacy `UserRole` / `GroupRole` / `OrUserRole` handler fields
@@ -701,6 +1206,8 @@ caller-supplied `AppRoleID` so a sign-up can never self-assign a role.
 `repositories/seed_roles_test.go` (default-role seeding), the per-create assignment tests in
 `repositories/users_test.go` / `repositories/groups_test.go`, and the handler authorization tests in
 `handlers/generic_handler_test.go` (with shared helpers in `handlers/auth_test_helpers_test.go`).
+`handlers/group_delete_authorization_test.go` covers the `DeleteGroup` matrix (member with
+`group.delete`, non-member with `app.groups.delete`, both denials, and the All-group 400).
 
 ## MCP Server & OAuth 2.1
 
@@ -724,6 +1231,13 @@ Claude can read a user's data. It is **off by default** and Go-native (no separa
   - `/oauth/register` (Dynamic Client Registration, RFC 7591), `/oauth/authorize`
     (login form backed by `services.LoginUser`), `/oauth/token` (authorization_code +
     refresh_token grants, PKCE S256)
+    - **`services.LoginUser` itself rejects dummy users and empty passwords**, so the OAuth login form
+      cannot be used to authenticate a passwordless placeholder account. The REST login enforced this
+      via middleware + a post-check, but the OAuth authorize form called `LoginUser` directly and did
+      neither — a dummy user (stored as `bcrypt("")`) could obtain an MCP token with an empty password.
+      Centralizing the guard in `LoginUser` covers every caller. Tests: `services/auth_test.go`
+      (`TestLoginUserRejectsDummyUser`, `TestLoginUserRejectsEmptyPassword`), `oauth/oauth_test.go`
+      (`TestAuthorizeRejectsDummyUserAndEmptyPassword`).
   - `/mcp` — Streamable HTTP MCP endpoint, guarded by bearer-token auth (401 +
     `WWW-Authenticate` advertising the protected-resource metadata)
 - **Auth model**: the OAuth tokens are Receipt Wrangler HS512 JWTs, but **MCP-audience bound**.
@@ -765,11 +1279,702 @@ Claude can read a user's data. It is **off by default** and Go-native (no separa
 - **Production**: `docker/default.conf` proxies the new root paths to the backend; the `/mcp`
   location disables buffering and raises the read timeout for SSE streams.
 
+## Session lifetime (configurable refresh-token expiry)
+
+How long a signed-in user stays signed in is an admin setting rather than a compile-time constant.
+Two System Settings drive it (`models.SystemSettings`, edited via the System Settings UI, validated
+in `commands.UpsertSystemSettingsCommand.Validate`):
+
+- `refreshTokenValidForHours` (int, default 24) — the REST/app refresh-token lifetime.
+- `mcpRefreshTokenValidForHours` (int, default 24) — the same for MCP/OAuth connector tokens, kept
+  **separate on purpose** so a long window chosen for human convenience does not silently extend
+  tokens held by third-party clients.
+
+Both are **whole hours**, bounded to **1-720 (30 days)**. There are two distinct "no value" cases,
+and the difference matters:
+
+- **Key omitted from the PUT body** (`nil` on the command) — the stored value is left alone. The
+  command fields are `*int`, because `UpdateSystemSettings` writes every column with `Select("*")`:
+  a plain `int` would persist as `0` and silently reset a configured lifetime whenever any client
+  PUT a partial body. Same hazard and same fix as the pointer fields on
+  `UpdateGroupReceiptSettingsCommand` (see the root `CLAUDE.md` → "Group Default Custom Fields").
+
+  **An omitted lifetime is dropped from the UPDATE entirely**, via
+  `OmittedLifetimeColumns()` feeding the existing `Omit(...)` on that statement — *not* by copying
+  the stored value onto the row. The distinction matters under concurrency: `existingSettings` is
+  read before the transaction, so two admins each setting one lifetime and omitting the other would
+  both write a full row and clobber each other's explicit value. A column that is never written
+  cannot be clobbered. This is deliberately **not** a `SELECT ... FOR UPDATE` row lock — SQLite is a
+  supported engine and rejects that syntax, there is no locking precedent anywhere in the codebase,
+  and a lock would only protect these two fields while every other column on this full-object upsert
+  stays last-write-wins. `ApplyOmittedLifetimes` still runs, but only so the response body echoes the
+  stored value instead of a misleading `0`.
+
+  Guarded by `TestUpdateSystemSettingsPreservesOmittedRefreshTokenLifetimes` (a **raw JSON body**
+  through the handler — a typed command literal cannot express an absent key),
+  `TestUpdateSystemSettingsOmitsUnsentLifetimeColumns` (the generated SQL), and
+  `TestUpdateSystemSettingsConcurrentLifetimeUpdatesBothSurvive` (two concurrent updates; fails on
+  the first attempt without the column skip).
+- **Explicit `0`** — means "unset, use the built-in default" (the `pdfDpi` convention). Valid, and
+  resolved by the clamp on read.
+
+**It is an inactivity timeout, not an absolute session cap.** Refresh tokens rotate on every use and
+both clients proactively refresh on a 15-minute timer, so an actively-used session re-mints itself
+indefinitely; the window only bites once a client has been away longer than it. There is no
+absolute cap — adding one would need a session-start timestamp threaded through every rotation.
+A useful corollary: **lowering** the setting takes effect for active sessions at their next refresh
+(~15 min), so only genuinely idle sessions coast on their original expiry. Nothing is bulk-revoked.
+
+**The access token is deliberately NOT configurable** and stays at 20 minutes
+(`utils.GetAccessTokenExpiryDate`). It is stateless and unrevocable, and both clients size their
+15-minute refresh timer against that fixed window — making it configurable would break them and
+widen the blast radius of a leaked token. This is also why `oauth.accessTokenExpiresIn` (the OAuth
+`expires_in`, RFC 6749 — which describes the access token only) still mirrors 20 minutes correctly.
+
+**Access and refresh tokens are NOT interchangeable.** They are otherwise minted with identical
+claims (same key/issuer/audience), so a refresh token would validate — and was previously usable — as
+an API access credential. Each now carries a `structs.Claims.TokenType` (`"access"` / `"refresh"`).
+The access paths reject refresh tokens (`middleware.UnifiedAuthMiddleware` JWT branch via
+`isRefreshToken`, and `mcp.verifyToken`); the refresh paths require a refresh token
+(`middleware.ValidateRefreshToken`, and the OAuth refresh grant guarded by the `refresh_tokens`
+table). `Claims.IsRefreshToken()` also recognizes **legacy** tokens minted before this claim existed:
+they have no `TokenType`, but only refresh tokens were ever given a `jti` (`RegisteredClaims.ID`), so
+a typeless token WITH a jti is treated as refresh. That keeps already-issued legacy access tokens
+working (no forced re-login) while still rejecting legacy refresh tokens immediately. Regression:
+`middleware.TestUnifiedAuthMiddleware_RejectsRefreshTokenAsAccess`.
+
+**Where the value is resolved.** `internal/utils` imports nothing from `internal/`, so it cannot
+read System Settings without an import cycle; `utils.GetRefreshTokenExpiryDate(lifetime)` therefore
+takes the duration as a parameter. `services.GetRefreshTokenLifetime()` /
+`GetMcpRefreshTokenLifetime()` do the live read and hand it to `generateTokenPair`, falling back to
+24h on error/unset/out-of-range via `clampRefreshTokenLifetime` — the same clamp-with-fallback shape
+as `repositories.pdfRasterizationDpi`. **The clamp, not the validator, is the real safety net**: it
+stops a bad stored value from ever producing a token regardless of how it got there. The bounds
+themselves live in `commands` (`Min`/`MaxRefreshTokenValidForHours`) and are imported by `services`,
+so validation and the clamp cannot drift. `BuildTokenCookies` resolves the app lifetime itself for
+the refresh cookie's `Expires` — both its call sites (login, token refresh) are REST-only, never
+MCP.
+
+The `@every 24h` refresh-token cleanup cron is unaffected: it deletes on `is_used = true` as well as
+expiry, and rotation marks the previous token used immediately, so the table stays small at any TTL.
+
+**Refresh-token consumption is atomic.** `middleware.RevokeRefreshToken` marks the token used with a
+single `UPDATE ... WHERE token = ? AND is_used = false` and checks `RowsAffected`, mirroring
+`oauth.rotateRefreshToken`. It used to read then update separately, which let two concurrent
+refreshes both observe `is_used = false` and rotate — defeating replay detection, and logging the
+loser out of every tab once the rotation it lost landed. Unknown and already-used tokens are
+deliberately indistinguishable (both already returned the same response). Guarded by
+`TestRevokeRefreshToken_ConcurrentRefreshesOnlyOneSucceeds`.
+
+Tests: `services/refresh_token_lifetime_test.go` (clamp table, per-field isolation, expiry stamped
+on both the JWT claim and the persisted row, MCP using its own setting, access token unchanged),
+`commands/upsert_system_settings_command_test.go` (bounds + the `0` escape hatch),
+`middleware/refresh_token_test.go` (the concurrency guard), `utils/auth_test.go` (the helper honors
+whatever lifetime it is handed), `handlers/system_settings_handler_test.go` (the omitted-key and
+explicit-value endpoint round trips), `repositories/system_settings_test.go` (the omitted-column SQL
+shape and the concurrent-update guard), and `desktop/e2e/session-lifetime.spec.ts` (the only
+end-to-end proof that the setting reaches the `Set-Cookie` header).
+
+## Temporary file retention & cleanup
+
+`temp/` holds the files the ingest pipelines work from. Everything that writes
+there: the **quick-scan upload** (`handlers/receipts.go`, one per file in a
+multi-file scan), the **email attachment and its `image-` OCR copy**
+(`wranglerasynq/email.go`), the **email body image**, short-lived scratch from
+`MagicFillFromImage` / `ReadImageWithEasyOcr` / `ConvertPdfToJpg` (each with a
+`defer os.Remove`), and the **`DebugOcr` dumps** from `services/ocr.go`
+`writeDebuggingFiles`, which are never removed by the code that writes them.
+
+**`HandleTempFileCleanUpTask` (`wranglerasynq/temp_file_cleanup_handler.go`) is
+the only thing that reclaims them.** It runs `@every 1h` on
+`models.SystemCleanUpQueue`, registered from **`StartSystemCleanUpTasks`**, and
+that placement is load-bearing: it used to live in `StartEmailPolling`, which
+`main.go` calls only when `EmailPollingInterval > 0 && ReceiptProcessingSettingsId != nil`,
+so an install that never configured email polling ran **no temp cleanup at all** —
+including for quick-scan uploads, which have nothing to do with email.
+`StartEmailPolling` also re-runs on every polling-interval change while
+`scheduler.Register` adds an entry without removing the previous one, so the sweep
+used to accumulate duplicate crons.
+
+### The classification, and its precedence
+
+Ordered — the order is the behaviour, not a formatting choice:
+
+| # | Case | Action |
+|---|---|---|
+| 1 | any referencing task is still actionable (pending/active/scheduled/retry/aggregating) | keep |
+| 2 | else any referencing task is `Archived` | keep until older than retention |
+| 3 | else every referencing task is `Completed` | remove now |
+| 4 | unreferenced | keep until aged, **and only when the reference map is complete** |
+
+**Rule 2 must be tested before rule 3.** One email attachment fans out to a
+sibling task per `groupSettingsId`, so a file can be referenced by both a
+succeeded task and a permanently failed one; releasing it because something
+succeeded is precisely the bug this sweeper replaces.
+
+**`Archived` can never mean deletable** — it is the state that makes an activity
+rerunnable (`SetActivityFlags`), and the previous cleanup released on it.
+
+Age comes from **file mtime**, not task timestamps: uniform across queues, still
+correct once the task ages out of Redis, and it doubles as the grace window for
+the race where a file is written just before its task becomes visible.
+
+### Two invariants that keep the orphan branch safe
+
+The failure mode inverted with the rewrite. Previously a task the scan missed
+meant "we fail to delete" (harmless); now it means the file looks unreferenced
+and is deleted once aged. So:
+
+1. **Every inspector listing pages.** Asynq defaults to **30 per page**
+   (`defaultPageSize` in its `inspector.go`), and the old `getTaskInfo` passed no
+   `ListOption` at all. `forEachTaskPage` loops with `asynq.PageSize`/`asynq.Page`
+   until a short page, handing each page to a callback and then dropping it —
+   the sweep wants each payload's paths and state, while the payloads are the
+   large part (`EmailProcessTaskPayload` carries the body twice, copied per
+   `groupSettingsId`). Accumulating a whole listing first held the archived email
+   set — 10,000 tasks, kept 90 days — in memory at once inside an hourly job.
+   Building the map incrementally makes the abort path load-bearing: a listing
+   error must discard what it already has, or the unreached files look
+   unreferenced and the orphan branch deletes them once aged.
+2. **Any gap stands the orphan branch down for that run.** A listing error other
+   than `ErrQueueNotFound` aborts the whole sweep with zero deletions; a payload
+   that will not unmarshal, **or a listing that runs out the `tempFileMaxListPages`
+   cap**, drops a `referencesComplete` flag that suppresses **only** rule 4. Rules
+   1-3 rest on a state actually observed, so they stay live.
+   (The old `buildAttachmentMap` returned the error, which would have aborted every
+   future sweep after one malformed payload.)
+
+   The cap is the easy one to overlook, because it reads like a loop guard rather
+   than a correctness rule: running out of pages is the one case that silently skips
+   **real** tasks, so `forEachTaskPage` reports it (`(scannedAll bool, err error)`)
+   and logs it. Reaching it takes ~100,000 tasks in one (queue, state) and is close
+   to unreachable in practice — asynq caps the archived set at 10,000 — but the
+   failure direction is deletion of a user's file, so it fails the safe way: rule 4
+   simply reclaims nothing that run.
+
+### Rule 3 is live on the email queue alone
+
+Asynq drops a successfully-processed task the instant it succeeds unless the
+enqueue sets `asynq.Retention`, in which case the task stays in Redis for that
+long in the **completed** set and the janitor reaps it afterwards. Nothing here
+set it at first, so `ListCompletedTasks` was always empty and rule 3 was dead
+code — which is how the *old* cleanup came to be inverted end to end: its
+`Completed` branch could never fire, so the only files it ever deleted were the
+archived ones it had to keep.
+
+`enqueueOptions` (`task_enqueue.go`) now attaches
+`asynq.Retention(completedTaskRetention)` — **6 hours** — to
+`EmailReceiptProcessingQueue`, so a succeeded email upload's attachment and its
+`image-` OCR copy are released on the next hourly sweep instead of waiting out
+the user-configured window. The duration is a handful of sweep intervals rather
+than a day because `EmailProcessTaskPayload` carries the email body **twice**
+(`Metadata.Body` + `Metadata.BodyHtml`) and `email.go` copies the metadata per
+`groupSettingsId`, so one message consumed by N groups with M attachments retains
+N×M copies of a 50-500 KB body. Overshooting degrades benignly — the files just
+fall back to waiting out the window.
+
+**It is deliberately NOT on the other two queues**, and "the ingest queues" is the
+wrong mental model:
+
+- **Quick scan** already deletes its own file on success — `ReceiptService.QuickScan`
+  ends with `os.Remove(params.TempPath)`, reached only after the create-receipt
+  transaction commits, and every failure path returns earlier and keeps the file.
+  It is 1:1 task-to-file, so by the time such a task completes there is nothing on
+  disk for the sweep to classify. Retention there is pure Redis cost.
+- **`EmailPollingQueue`** owns no temp files at all.
+
+**Do not "fix" the email case by deleting on success inside
+`HandleEmailProcessTask`** instead: one `TempFilePath` fans out to N sibling tasks
+and the first to succeed would break the rest. The sweep owns the decision
+precisely because it can see every referencing task at once, and retention is what
+lets it see them.
+
+**No janitor configuration is needed.** `asynq.Server.Start` starts the janitor
+unconditionally and it runs `DeleteExpiredCompletedTasks` per queue every 8s by
+default; `asynq_server.go` sets only `Concurrency` and `Queues`, so it takes that
+default.
+
+**Retention changed two things outside the sweeper**, both now guarded — see
+"Activity source files" below for `rerunnableState` (the rerun endpoint's state
+check, which asynq does *not* enforce for us) and `offersSourceFile` (a succeeded
+task stops advertising its upload).
+
+### `TempFileRetentionHours`
+
+A System Setting, default **720** (30 days), bounds **24-8760** (1 year), `0`
+means unset. It follows the `RefreshTokenValidForHours` machinery exactly — see
+"Session lifetime" above for the `*int` command field, `OmittedLifetimeColumns`
+and why an omitted key is *dropped from the UPDATE* rather than copied. Despite
+their names, both helpers now cover every pointer-backed duration field.
+
+`tempFileRetention()` is the read-side clamp, the same shape as
+`repositories.pdfRasterizationDpi`: **the clamp, not the validator, is the real
+safety net**, because it also covers a value that predates the bounds or a
+settings row that cannot be read at all.
+
+### Upgrade path
+
+`EmailReceiptImageCleanupQueue` stays declared in `models/queue_names.go` —
+persisted `TaskQueueConfigurations` reference it, `QueueName.Value()` whitelists
+it, and `UpsertSystemSettingsCommand.Validate` requires a configuration for every
+name. The retired `EmailProcessImageCleanUp` **task type** also stays declared and
+stays routed in `BuildMux`: the type is a string in Redis, so tasks the old cron
+already enqueued outlive the deploy and would otherwise fail as unregistered.
+`DeleteAllScheduledTasks` alone is insufficient — it only touches the *scheduled*
+set, so `retireEmailReceiptImageCleanupQueue` drains **pending** too.
+
+**The symmetric case — a persisted list MISSING a name — is handled in
+`repositories/system_settings.go`, and it used to 400 every settings save.** An
+install that last saved before `SystemCleanUpQueue` existed has four
+`task_queue_configuration` rows. `GetSystemSettings` substituted defaults only when
+the list was **empty**, so it returned four; the desktop form builds its rows from
+that response rather than from the `QueueName` enum, so it submitted four; and
+`UpsertSystemSettingsCommand.Validate` requires one per queue name, so it rejected
+the **whole** body with a 400 — `tempFileRetentionHours` along with everything else.
+`asynq_server.go` falls back to the default priority for a missing configuration, so
+the task server ran fine and nothing surfaced the gap.
+
+`withMissingQueueConfigurations` now fills any absent name from
+`GetDefaultQueueConfigurationMap()` on read (persisted priorities win; ordering
+follows `GetQueueNames()`; a row naming a queue this build does not know is dropped,
+since `QueueName.Value()` would reject it on the way back down), and
+`UpdateSystemSettings`' per-name branch **inserts** a submitted configuration that
+has no row instead of no-op'ing its `UPDATE`. Both halves are needed: without the
+insert the DB never heals and the submitted priority is silently discarded on every
+save. Which names exist is read up front rather than inferred from `RowsAffected`,
+which a no-change `UPDATE` reports as `0` on MySQL. The bug predates this feature —
+adding a setting worth changing is what made it reachable.
+
+### Testing
+
+The sweeper is deliberately three seams so the rules stay Redis-free:
+`listTempFileReferences` (Redis, injectable listers), `classifyTempFile` (**pure**
+— no Redis, no filesystem) and `sweepTempDirectory` (`t.TempDir()` + `os.Chtimes`).
+`wranglerasynq/main_test.go` starts no Redis and must not have to. Keep it that
+way — the precedence table above is only cheap to cover exhaustively because the
+classifier is pure.
+
+## Activity source files (preview / download)
+
+A failed quick scan or email upload keeps its image (above), so the user can get
+it back and enter the receipt by hand. Two endpoints on the system task router,
+both gated on **`group.activities.read`** for the task row's own `GroupId`:
+
+- `GET /systemTask/{id}/sourceFile` — JSON `{ name, encodedImage }`.
+- `GET /systemTask/{id}/sourceFile/download` — the original bytes.
+
+**Preview goes through `FileRepository.BuildDisplayImageString`, like every other
+browser-facing image response.** That helper is the one canonical
+`raw bytes → data URI a browser can render in an <img>` transform: PDFs rasterize,
+HEIC transcodes, everything else passes through. Reading the bytes stays the
+caller's job — `data/` and `temp/` are separate trust boundaries with separate
+containment checks, and `ConvertToJpg` has no file at all — but the *encode* half
+is shared, so no surface can get it half-right.
+
+**This shipped wrong and the failure was silent**, which is worth knowing before
+touching any of it. The preview originally called `BuildEncodedImageString` on the
+raw upload. That looks harmless until you read `GetFileType` (`files.go`), which
+relabels PDF bytes as `image/jpeg` **without converting them** — so a quick-scanned
+PDF previewed as `data:image/jpeg;base64,JVBERi0…`: a well-formed data URI carrying
+`%PDF`, which the browser silently fails to decode into a broken-image icon. No
+error, no suspicious mime, nothing in the logs. Quick scan was the exposed case
+because `taskSourceFiles.Preview` is always empty for `QUICK_SCAN`, so the handler
+always falls back to the raw upload; email escaped it only because
+`ImageForOcrPath` was already converted at enqueue.
+
+**Preview still prefers `ImageForOcrPath` when the payload has one; download always
+serves `TempFilePath`.** That preference is an optimization *within* the canonical
+path, not a divergence: `GetBytesFromImageBytes` on a multi-page PDF runs
+`ConvertPdfToJpg` at the configured `PdfDpi` and concatenates every page into one
+tall JPEG — seconds of CPU inside a request — and for email that conversion already
+exists on disk, passing through untouched. Quick scan has no such copy and pays the
+conversion, exactly as the receipt form does. Download is the *original*, under its
+original name, because that is the file the user recognises.
+
+**The path comes out of a Redis payload**, so it goes through
+`FileRepository.AssertWithinTempDirectory` before anything opens it — see
+"Filesystem Access & Path-Traversal Safety" **above**. `resolveActivityFlags`
+applies the same rule via `sourcePathUsable`, so the flag and the endpoint cannot
+disagree about a path; without that, a flag resolved from a bare `FileExists`
+would render a preview control whose request can only fail, and the stat would
+double as an existence oracle for arbitrary server paths.
+
+**Never `utils.ReadFile` here.** It returns `(nil, nil)` on any read error, which
+would serve an empty image as a success.
+
+`Content-Disposition` is **sanitized and then formatted by `mime.FormatMediaType`**,
+never concatenated. `utils.SanitizeFileName` is `filepath.Base`, so it reduces an
+email attachment's MIME-header name to a basename but leaves a `"` in it — and a
+raw `filename="`+name+`"` then closes the quoted value early, so a client reading
+the header back gets `receipt` out of `receipt"final.pdf` and loses the extension.
+`FormatMediaType` escapes it, and switches to the RFC 5987 `filename*` form for a
+non-ASCII name; the desktop parser reads both (`desktop/src/utils/file.ts`), which
+is why changing one side without the other breaks every accented attachment name.
+
+The other five `Content-Disposition` writers are unchanged and are **not** parsed
+client-side: `DownloadReceiptImage` is unquoted *and* unsanitized (a latent bug),
+and the two report downloads quote without sanitizing. Copy the rest of
+`DownloadReceiptImage`'s shape (`ResponseType: ""` so `http.ServeFile` owns
+Content-Type, header before serving, `return 0, nil` once streaming begins), not
+that line.
+
+### The two flags, and why they differ
+
+- **`hasSourceFile`** — the task type expects an upload **and** it exists. True in
+  **any** task state.
+- **`canBeRestarted`** — the task is **`Archived`** and every file a rerun reads
+  exists.
+
+`canBeRestarted` stays pinned to `Archived`, and **enforcing that is ours, not
+asynq's.** `Inspector.RunTask` does *not* refuse a task by state: its Lua script
+special-cases only `active` (-1) and `pending` (-2), and every other state —
+**`completed` included** — falls into the branch that `ZREM`s the id from its set
+and `LPUSH`es it back onto pending (`asynq@v0.25.1/internal/rdb/inspect.go`). That
+was harmless only while completed tasks never existed; with the email queue's
+retention, a rerun of a succeeded upload would pass `GetTaskInfo`, pass
+`RerunSourceFilesPresent` (the files are still on disk) and **create a duplicate
+receipt**. So `rerunnableState` (`source_file.go`) is the rule, `CanRerunTask` is
+its exported form, and `RerunActivity` refuses anything else with a **400** —
+matching exactly what `canBeRestarted` advertises.
+
+`hasSourceFile` is deliberately **not** gated on `Archived`: asynq backs its
+retries off exponentially, so a task takes minutes to archive and the user should
+not watch an activity sit at FAILED with no way to retrieve their image. It *is*
+gated on the task not having **succeeded** (`offersSourceFile`), which is a
+different rule: a retained `Completed` email task still has both files on disk
+until the next sweep, and without this the preview/download controls would appear
+on a succeeded activity for up to an hour and then 404. `ResolveSystemTaskSourceFile`
+applies the same predicate — the two read the same task state, so they share one
+function rather than two conditions that can drift.
+
+**Email needs both files for a rerun** — `HandleEmailProcessTask` reads
+`TempFilePath` for the `FileData` it persists and hands `ImageForOcrPath` to the
+OCR/vision pipeline — while `hasSourceFile` keys on `TempFilePath` alone. A
+**body-only email has neither and stays rerunnable**, which is why "expects a
+file" is tracked apart from "has a file".
+
+### Authorization order, and why it is not the payload's job
+
+Both endpoints, and `RerunActivity`, answer **every** authorization question before
+any file-specific one. The sequence is: load the task row → gate on its `GroupId`
+with `group.activities.read` → check actor visibility → only then resolve the file
+and emit 400/404.
+
+That ordering is the fix for two things.
+
+**Member isolation applies per task, not just per list.** `GetActivitiesForGroups`
+filters rows in SQL through `ActivityVisibilityResolver`, so inside an isolated
+group a plain member never *sees* a hidden co-member's activity — but they hold
+`group.activities.read` there, so naming that activity's id directly returned the
+hidden member's upload. `enforceActivityActorVisible` applies
+`applyActivityVisibilityDisjunction`'s rule to one row, through the exported
+`PermissionService.UserVisibleInGroup`. A nil `RanByUserId` is a system action and
+stays visible, exactly as the SQL clause has it — which is **every EMAIL_UPLOAD**,
+since email is polled rather than run by a user.
+
+**Resolving the file first leaked its existence.** The group used to come from the
+asynq payload via `ResolveActivityGroupId`, which meant a Redis round trip — and a
+400/404 written from it — *before* `HandleRequest` ran the gate, so an
+unauthorized caller learned whether a task existed, whether its type had a source
+file, and whether that file was still on disk. `models.SystemTask` carries
+`GroupId` and `RanByUserId` as ordinary columns, populated for both task types, so
+nothing about the gate needs Redis. A nil `GroupId` **fails closed**. The
+authorization denial and the "no such file" answer are now deliberately
+indistinguishable, and the gate is reachable in a handler test without a Redis
+instance — which is how it is covered, since the source-file endpoints otherwise
+cannot be.
+
+**Two smaller oracles sit a layer above that one, and both are closed the same way.**
+A task id naming **no row** used to surface `gorm.ErrRecordNotFound` as a **500**
+while a denied one answered 403, so the status distinguished "exists" from "does not
+exist" for arbitrary ids; `loadSystemTaskForSourceFile` now maps that one error — and
+only that one — to the same 403 and the same `activityAccessDeniedMessage`. And
+`RerunActivity`'s "only a quick scan or email upload can be rerun" check ran *before*
+the handler was built, so it answered ahead of the gate and told an unauthorized
+caller the activity's type; it now runs inside `HandlerFunction`, after
+`enforceActivityActorVisible`.
+
+**The body is half the answer, and it is written by three different places.** Closing
+the status oracle with wording of this feature's own just moved it: the group gate is
+`HandleRequest`, which writes `unauthorizedEntityMessage`
+(`handlers/generic_handler.go`), while the row lookup and the actor check write their
+own. So `activityAccessDeniedMessage` **is** `unauthorizedEntityMessage` — not a copy
+of its text, the constant itself, since a divergence is only ever a bug. Any handler
+that denies for a reason of its own has to reuse it. Assert such a fix across **every**
+denial path at once — the unknown id against the hidden actor *and* against the
+non-member — since one pairing passes while another still leaks.
+
+### Hydration traps
+
+- **`AssociatedSystemTaskId == nil` is NOT a valid "top level" test.**
+  `email_process_handler.go` chains every `EMAIL_UPLOAD` task under its
+  `EMAIL_READ` parent, so that rule reads false for exactly the rows this feature
+  exists for. `SetSystemTaskHasSourceFile` hydrates the rows the page returned and
+  never recurses into `ChildSystemTasks`.
+- **`GetPagedActivities` must `Omit` every computed field.** GORM infers the
+  SELECT list from the `structs.Activity` destination, so it is
+  `.Omit("can_be_restarted", "has_source_file")`. `asynq_task_id` is a real column
+  and needs none — it is selected so the flags resolve without a per-row query.
+- **Both hydrators live in `wranglerasynq`, not `repositories`** —
+  `wranglerasynq` imports `repositories`, so a loader there needing
+  `GetAsynqInspector` is an import cycle. The precedent to cite is
+  `models.ReportTemplate.AllowedActions` (a `gorm:"-"` field the list handler
+  fills per row), not `LoadSettingsProjections` (pure-DB, lives in the repo).
+- **The system-task flag is resolved per caller.** That table is app-scoped
+  (`app.system-tasks.read`) and lists groups the caller may not belong to, so the
+  handler passes a `canReadGroup` predicate; without it the table would offer
+  buttons that 403.
+- **Nothing here fails a request.** A task that aged out of Redis, an unreadable
+  payload or a failed stat leaves both flags false; the first *other* lookup error
+  logs once and stops, rather than paying a dial timeout per remaining row.
+
+**A known duplication, accepted:** `CreateSystemTasksFromMetadata` creates up to
+two rows of the same type sharing one `AsynqTaskId` when a fallback processing
+setting ran, so such a failure already shows two Rerun buttons and now shows two
+button pairs. Deduping would change rerun's existing behaviour.
+
+## Login QR & mobile deep link
+
+The desktop login page can show a self-contained QR that sets up the mobile app. Two System Settings
+drive it (`models.SystemSettings`, edited via the System Settings UI, validated in
+`commands.UpsertSystemSettingsCommand.Validate`):
+
+- `showLoginQr` (bool, default false) — opt-in toggle.
+- `mobileServerUrl` (string) — the server/API URL mobile clients connect to; required (absolute
+  http/https, validated by `isValidAbsoluteUrl` — the former `isValidMcpPublicUrl`, generalized and
+  now shared by both settings) when `showLoginQr` is on. `isValidAbsoluteUrl` also rejects **embedded
+  credentials** (`https://user:token@host`): both settings it guards are published to unauthenticated
+  clients — this one inside the login QR on the public `/featureConfig`, `mcpPublicUrl` in the OAuth
+  discovery metadata — so userinfo would be handed out verbatim. **http stays valid** on purpose:
+  LAN / bare-IP self-hosting is a supported deployment (the mobile Connect screen accepts http too).
+
+`SystemSettingsService.GetFeatureConfig()` derives a single **`FeatureConfig.LoginQrUrl`** from them
+via `BuildLoginQrUrl` (`services/system_settings.go`): the App Link / Universal Link
+`https://receiptwrangler.io/app/setup#url=<percent-encoded mobileServerUrl>` when the toggle is on and
+a URL is set, else `""`. The server URL rides in the **fragment** so it never reaches
+receiptwrangler.io's logs in the app-not-installed web fallback. `loginQrUrl` is the **only** login-QR
+value exposed on the public, unauthenticated `GET /featureConfig` payload — the raw setting and toggle
+stay behind auth. The desktop renders the QR locally from `loginQrUrl` (no new endpoint/handler).
+
+The `receiptwrangler.io/app/setup` host/path is a fixed, project-owned constant that MUST stay in sync
+with the mobile App Link config and the `.well-known/assetlinks.json` / `apple-app-site-association`
+files hosted on **receiptwrangler.io** (served from that domain's own nginx/docs infra — not this
+repo; the same layer also serves a `/app/setup` platform redirect for the app-not-installed fallback).
+See `mobile/CLAUDE.md` → "App Links / Universal Links — server-URL pre-fill (login)". Tests:
+`commands/upsert_system_settings_command_test.go` (validation), `services/system_settings_test.go`
+(`BuildLoginQrUrl` compose/encoding + `GetFeatureConfig` mapping).
+
+## System task filtering
+
+`GET`-by-POST `/systemTask/getPagedSystemTasks` accepts a `filter` on
+`GetSystemTaskCommand`: a `SystemTaskPagedRequestFilter` of four `PagedRequestField`s — `type`,
+`ranBy`, `startedAt`, `endedAt` — reusing the receipt filter's `FilterOperation` enum and wire shape,
+so the desktop renders both dialogs from one row component.
+
+- **`BaseRepository.BuildFilterQuery`** is the shared operation→WHERE translator, promoted from
+  `ReceiptRepository.buildFilterQuery` so the receipt filter and the system task filter cannot drift
+  on what an operation means. `fieldName` is interpolated into the clause, so it MUST stay a
+  hardcoded column literal supplied by the caller — never a request value.
+- **Predicates are applied before `Count`** (`buildSystemTaskFilterQuery`, called from
+  `GetPagedSystemTasks`), mirroring `GetPagedActivities`' visibility disjunction, so `totalCount`
+  describes the filtered set rather than the whole table.
+- **Every unwrap is a comma-ok assertion.** Values arrive as `interface{}` off the request body; a
+  wrong-typed value is treated as "field not set". This is deliberately unlike the receipt builder's
+  bare `.(string)` / `.([]interface{})` assertions, which panic on a malformed body — and it is why
+  there is no `initSystemTaskFilterValues` analogue seeding non-nil defaults.
+- **`ranBy` does not go through the shared helper**, because `ran_by_user_id` is nullable and the
+  rows with no user are exactly the ones the table labels "System". The desktop submits
+  `repositories.SystemRanByUserId` (`-1`, negative so it can never collide with a real id — the
+  `OWN_PAID_RECEIPTS_OPTION_ID` convention) for those, and `applyRanByFilter` splits the sentinel out
+  of the id list: sentinel only ⇒ `IS NULL`, ids only ⇒ `IN ?`, both ⇒
+  `IS NULL OR ran_by_user_id IN ?`. Ids decode as `float64` through `encoding/json`, hence `toInt64`.
+- **`started_at` / `ended_at` are compared as whole calendar days** (`applyTimestampDayFilter`).
+  Unlike the date-only column the receipt `date` filter compares against, these carry a time of day,
+  so a raw comparison to the datepicker's midnight would make `EQUALS` never match and `BETWEEN` drop
+  everything after midnight on the end day. `EQUALS d` ⇒ `[startOfDay(d), startOfDay(d)+24h)`,
+  `GREATER_THAN d` ⇒ `>= startOfDay(d)+24h`, `LESS_THAN d` ⇒ `< startOfDay(d)`, `BETWEEN [a,b]` ⇒
+  `[startOfDay(a), startOfDay(b)+24h)`; `WITHIN_CURRENT_MONTH` delegates to `BuildFilterQuery`, which
+  already does the right thing.
+  - **The wire format is a bare calendar day, `yyyy-MM-dd`.** "Day" resolves in the server's
+    location (`time.Local`, the same zone `WITHIN_CURRENT_MONTH` already uses), so an *instant*
+    would be ambiguous: resolving it here picks the day in the server's zone, and a UTC-4 browser
+    picking Sep 22 lands on Sep 21 against an API in America/Los_Angeles. The desktop normalizes to
+    a calendar day before sending (`toSystemTaskWireFilter`); `startOfDayValue` parses that first
+    and still accepts a full RFC 3339 instant for any other caller. The receipt filter, which sends
+    instants, retains the original hazard.
+  - **`ended_at` is nullable, so any filter on it excludes tasks that are still running.** That is
+    the correct reading of "ended before X"; it is not special-cased.
+- **The two child-only types stay excluded.** `filteredSystemTaskTypes` (`CHAT_COMPLETION`,
+  `OCR_PROCESSING`) is applied before the filter, so a `type` filter narrows within the top-level
+  rows. The desktop's Type picker omits them for the same reason; keep
+  `CHILD_ONLY_SYSTEM_TASK_TYPES` in `desktop/src/constants/system-task-type-options.ts` in sync with
+  the Go list, which `TestGetPagedSystemTasksExcludesChildTaskTypes` pins.
+- **`RECEIPT_UPLOADED` is listed only when it has no parent.** Manual creates and duplicates record
+  a parentless row, and the admin page is the only place those surface. Quick scan and email record
+  theirs as a child of the QUICK_SCAN / EMAIL_UPLOAD task, and the table already shows it by
+  expanding that row, so a `Not(type = RECEIPT_UPLOADED AND associated_system_task_id IS NOT NULL)`
+  keeps them from being listed twice. A parent id is the right test for this type alone — an
+  EMAIL_UPLOAD also has a parent (see "Hydration traps") and is still a top-level row. The Type
+  picker offers "Receipt Uploaded", and it returns only the parentless rows.
+  - **`CreateReceipt` records its own failure only when `createSystemTask` is true.** That flag
+    means "this call owns the upload task": the manual form passes `true`, so a failed create now
+    shows as a FAILED Receipt Uploaded row. Quick scan and email pass `false` because
+    `CreateReceiptUploadedSystemTask` already records the failure as a child. The guard used to be
+    inverted, which recorded nothing for a manual failure and a second, parentless row for every
+    quick scan and email failure. Rows of that second kind written before the fix still list, as
+    Failed; email's carry `ran_by_user_id = 0` rather than NULL, so the "System" ran-by filter does
+    not match them. Pinned by `TestCreateReceiptRecordsFailedUploadTaskWhenItOwnsTheTask` and
+    `TestCreateReceiptLeavesFailedUploadTaskToTheCaller`.
+  - **`DuplicateReceipt` is all or nothing.** The new receipt and its image files are created in
+    one `db.Transaction`. `copyDuplicateImages` returns every path it wrote or tried to write, and
+    `DuplicateReceipt` removes them whenever the transaction returns an error, so a failed commit is
+    covered as well as a failed copy. Each path is tracked **before** its write, because a write
+    that fails partway can leave a truncated file. A failed duplicate therefore leaves no receipt, no
+    `FileData` and no files. Its task records FAILED with the error and no receipt link:
+    `ReceiptId` / `AssociatedEntityId` are set only once the transaction commits. Three details are
+    load-bearing:
+    - **`err` is a named result**, read by the deferred `CreateSystemTaskFromError`. It used to be a
+      plain local that the image loop shadowed with `:=`, so a failed copy returned a 500 while the
+      task said SUCCEEDED.
+    - **The copy runs on the transaction** (`NewFileRepository(tx)`): `BuildFilePath` looks the new
+      receipt's group up by id, and the row is not visible on another connection yet.
+    - **It copies the stored bytes** (`utils.ReadDataFile`), never `GetBytesForFileData`, which is
+      the display conversion. That rasterized a PDF or transcoded HEIC to JPEG and saved it under the
+      original name and file type, so the duplicate's "receipt.pdf" downloaded as a JPEG.
+    Pinned by `services/duplicate_receipt_test.go`.
+
+The handler is unchanged: `GetSystemTasks` already passes the whole command through and the
+`app.system-tasks.read` gate still applies. Note this endpoint has **no** member-isolation filtering
+(unlike `GetPagedActivities`) — it is admin-only by that permission.
+
+**Tests:** `repositories/system_task_test.go` — `TestApplyTimestampDayFilterWidensBoundsToWholeDays`
+asserts the **bound values** off a `DryRun` statement rather than row counts, because the test DB is
+SQLite: it stores timestamps as text and compares them lexically, where a raw bound happens to sort
+*after* every row on the same day (`" " < "T"`), so a row count alone cannot tell the widened path
+from the broken one. The behavioural cases (`...FiltersByType`, `...FiltersByRanBy`,
+`...BetweenIncludesTasksLateOnTheEndDay`, `...EqualsMatchesTheWholeDay`,
+`...LessThanOnEndedAtExcludesRunningTasks`, `...IgnoresWrongTypedFilterValues`) all assert
+`totalCount` alongside the rows. Also `commands/get_system_task_command_test.go` (the wire keys, the
+`float64` ids, and an absent `filter` staying zero-valued).
+
+## Receipt update snapshots (`RECEIPT_UPDATED`)
+
+`ReceiptRepository.UpdateReceipt` records a `RECEIPT_UPDATED` system task whose description is
+`{"before": "<receipt JSON>", "after": "<receipt JSON>", "version": 2}`. Each side is
+`Receipt.ToString()`, so the value is **double-encoded**. The desktop parses it itself and renders a
+side-by-side diff (see `desktop/CLAUDE.md` → "Receipt update diff"), so keep the format stable: an old
+row must still parse.
+
+**The format is versioned** by `repositories.ReceiptUpdateDescriptionVersion`. A row with **no
+`version` key is version 1**: its "before" is incomplete (below). **Version 2** rows have a complete
+"before". Bump the constant whenever the snapshot format changes; the repository test pins the
+literal `2`, and the desktop's `COMPLETE_RECEIPT_UPDATE_VERSION` must agree.
+
+**Both sides are loaded with `GetFullyLoadedReceiptById`.** `before` used to be serialized from
+`currentReceipt`, which only preloads `clause.Associations`, one level deep. Loaded that way, the
+snapshot has no item categories, tags or linked items and no custom field definitions, and it lists
+linked items as top-level items (`FilterLinkedItemsFromReceiptItems` never ran). Every update would
+then diff as a change to all of those. `currentReceipt` itself is left alone, because the update
+relies on it (`BeforeUpdateReceipt`, `Model(&currentReceipt)`). The snapshot is one extra read.
+Pinned by `TestUpdateReceiptSystemTaskSnapshotsAreLoadedToTheSameDepth`, which fails with the old
+loader.
+
+**Version 1 rows are rebuilt on read, never rewritten.** `GetSystemTasks` passes each page through
+`SystemTaskService.UpcastReceiptUpdateDescriptions` (`services/receipt_update_history.go`). For every
+successful version 1 row it swaps the incomplete "before" for the **nearest earlier complete copy of
+the same receipt**: the previous `RECEIPT_UPDATED` row's "after", or the `RECEIPT_UPLOADED` copy
+stored when the receipt was created. The form, Quick Scan, email and duplicate all store one. It adds
+`"beforeSource": {type, systemTaskId, recordedAt}` and keeps `version: 1`.
+- **One query per page** fetches the candidates, below the page's highest version 1 id.
+- A receipt is matched on `receipt_id`, or on `associated_entity_type = RECEIPT` plus its id.
+  Quick Scan and email uploads carry only the former; old rows may carry only the latter.
+- A candidate is used only if it parses and its `id` is that receipt's.
+- A row with no usable candidate is left as stored.
+- Why it stays version 1: a change that writes no update row, such as a bulk status change, falls
+  inside a rebuilt comparison, and a version 2 row's own "before" would not have it.
+- Why on read: `resultDescription` is a free-form string, so there is no swagger change or client
+  regeneration. Mobile never reads it. And the stored history is never rewritten.
+- Only the System Tasks listing does this; `getPagedActivities` doesn't display descriptions.
+
+Tests: `services/receipt_update_history_test.go` covers the matching rules, and
+`handlers/system_task_handler_test.go` → `TestGetSystemTasksRebuildsVersionOneReceiptUpdates`
+covers the listing.
+
+## Receipt statuses
+
+`models.ReceiptStatus` (`internal/models/receipt_status.go`) is a plain Go `string` type — there is
+no DB enum or CHECK constraint anywhere, so **adding a value needs no migration**, only these four
+edits, which nothing forces to agree with each other:
+
+1. the `const` block,
+2. the `Value()` guard chain (a missing value makes every write fail as a generic 500),
+3. `ReceiptStatuses()` — the single membership list, which drives the server-side validations of a
+   caller-supplied status: `handlers/receipts.go` `BulkReceiptStatusUpdate`,
+   `commands/update_group_receipt_settings_command.go` `isValidReceiptStatus` (which covers both the
+   quick-scan default and the receipt summary's breakdown set), and
+   `repositories/group_receipt_settings.go` `canonicalStatusOrder`, which orders a group's configured
+   summary statuses by this list rather than alphabetically,
+4. the `ReceiptStatus` enum in `swagger.yml` — then regenerate **both** clients, `mobile/api/`
+   included, in the same change (see "API Client Generation").
+
+`models/receipt_status_test.go` → `TestReceiptStatuses` asserts the exact list **and order**, so it
+fails by design on any addition. Update it rather than weakening it.
+
+**`AfterReceiptUpdated` (`repositories/receipts.go`) is the only transition logic** — there is no
+state machine, any status may follow any other, and all three write paths reach it (`UpdateReceipt`,
+`CreateReceipt`, and the bulk handler). Two statuses are **terminal** and cascade the receipt's items
+to `ITEM_RESOLVED`:
+
+- **`RESOLVED`** also stamps `resolved_date`.
+- **`DECLINED`** deliberately does **not** — a decline is not a resolution, and `resolved_date` is a
+  reporting dimension (`receiptsource.KeyResolvedDate` plus its derived day/month/year fields) and a
+  sortable/filterable column. It falls into the existing `Status != RESOLVED` branch, which clears
+  `resolved_date`.
+
+The cascade is what removes a terminal receipt from settlement: `handlers/users.go`
+`GetAmountOwedForUser` filters on **`ITEM_OPEN`**, i.e. the *item* status, never the receipt's. A new
+status that should not count as owed therefore has to be added to that cascade, not just the enum.
+`OPEN` and `NEEDS_ATTENTION` have no cascade and leave items alone.
+
+**Two validation gaps to know about** (both pre-existing): `UpsertReceiptCommand.Validate` and
+`UpdateGroupSettingsCommand.Validate` check a status is **non-empty**, never that it is a member — an
+arbitrary string reaches the DB layer and is caught only by `Value()`, surfacing as a 500. And
+`ReceiptStatus.Scan` never returns an error, so `QuickScanCommand.LoadDataFromRequest` cannot reject
+a bogus status either.
+
+## User Preferences
+
+Per-user settings, stored on `models.UserPrefernces` (note the misspelling - it is the repo-wide
+spelling of the type). There is **no service layer and no Upsert command**: `PUT /userPreferences`
+unmarshals the request body straight into the model, and the swagger `UserPreferences` schema is
+both the request and the response, so one schema edit covers both directions. The user id comes from
+the JWT, never the body. Gated by `app.user-preferences.read` / `.update`, both in the Legacy User
+set.
+
+The whole object also rides on **AppData** (`services/auth.go`), which is how the desktop and mobile
+read it without a second request.
+
+**`UpdateUserPreferences` copies the request onto the stored row one field at a time** - a new field
+that is not added to that block silently never persists: no compile error, and nothing else in the
+suite fails. `repositories/user_preferences_test.go` round-trips each boolean specifically to catch
+that; extend it when adding a field. The write itself is `Select("*").Updates(&struct)` inside a
+transaction, so GORM emits the column (including a `false`, which the struct form of `Updates` would
+skip) as soon as the model field exists.
+
+Because the body is unmarshalled with `encoding/json` and nothing sets `DisallowUnknownFields`, a
+**removed** field sent by an already-released mobile build is ignored rather than rejected, and an
+**omitted** field decodes to its zero value - so for a bool, "omitted" and "explicitly false" reach
+the repository identically. Both are pinned in `models/user_preferences_test.go`.
+
+Current fields: the three quick-scan defaults, `userShortcuts`, and `closeChipSelectOnSelect` (a
+desktop-only behavior flag for the multi-select chip pickers - see `desktop/CLAUDE.md` -> "The chip
+picker's close-on-select preference"; mobile carries the generated field but never reads it).
+
 ## Quick Scan Field Configuration
 
 Group admins configure the quick-scan workflow per group on `GroupReceiptSettings` (gated by the
 group `GroupUpdate` permission, edited via `PUT /group/{groupId}/groupReceiptSettings`). For each of
-**paid-by, status, categories, tags** there is an `*Enabled` (show) and `*Required` toggle. When
+**paid-by, status, categories, tags, comment** there is an `*Enabled` (show) and `*Required` toggle. When
 paid-by/status is **not** both shown and required, a default backfills it, so **a receipt always has
 a real paid-by and status — neither field is ever null/empty**. This is why the `Receipt` model,
 `UpsertReceiptCommand.Validate`, and the email workflow are all unchanged by this feature.
@@ -777,19 +1982,79 @@ a real paid-by and status — neither field is ever null/empty**. This is why th
 - **Model** (`models/group_receipt_settings.go`): the `QuickScan*` columns. Paid-by default is a
   `QuickScanDefaultPaidByType` (`UPLOADER` | `USER`, `models/quick_scan_default_paid_by_type.go`) plus
   a nullable `QuickScanDefaultPaidById`; status default is `QuickScanDefaultStatus`. Backwards-compatible
-  GORM defaults: paid-by/status ship **enabled + required** (no default needed), categories/tags
+  GORM defaults: paid-by/status ship **enabled + required** (no default needed), categories/tags/comment
   **hidden** — so existing groups are unchanged until an admin opts in. AutoMigrate adds the columns; no
   data migration.
+  - **`UpdateGroupReceiptSettings` assigns every field one at a time** — a new setting that isn't added
+    to that block silently never persists (no compile error, no test failure). `repositories/group_receipt_settings_test.go`
+    round-trips the flags specifically to catch that.
+- **Comment (`QuickScanCommentEnabled` / `QuickScanCommentRequired`)** captures a receipt comment at
+  scan time. Two things gate it beyond its own toggle, both resolved in **one** place per runtime so
+  they can't drift — `GroupReceiptSettings.IsQuickScanCommentShown()` / `IsQuickScanCommentRequired()`
+  on the server, and `resolveQuickScanFieldConfig` on both clients:
+  - **`HideComments`** (the group-wide "hide comments" setting) overrides the toggle. It is derived,
+    never written: the stored toggles are untouched, so turning `HideComments` off restores them. The
+    desktop config UI greys the two checkboxes out for the same reason — which is why its `submit()`
+    must use `getRawValue()` (a disabled control is omitted from `form.value` and would unmarshal as
+    `false`, wiping the admin's configuration).
+  - **`group.comments.create`** acts as an extra AND on "enabled". A caller without it never sees the
+    field, is **not** subject to the required check (or they could never quick scan at all), and any
+    comment they submit anyway is **silently dropped — deliberately not a 403**, unlike
+    `enforceQuickScanGrantSelection`'s treatment of out-of-grant categories/tags: a comment is
+    incidental to the receipt, so refusing the whole fire-and-forget scan over it is the worse
+    outcome. The permission is resolved only when the field is enabled (cached per group id), so the
+    default-off config costs no extra queries.
+  - **Required is enforced strictly**, like categories/tags: a client that omits `comments` while the
+    group requires one gets a 400. Backwards compatibility comes from the columns defaulting to
+    `false/false`, so an already-released mobile build is unaffected until an admin opts in — at which
+    point those builds must update. The desktop config UI says so inline.
 - **Config validation** (`commands/update_group_receipt_settings_command.go` `Validate`, now wired into
   the handler): a default is **required** for paid-by/status unless `(enabled && required)`; categories/
-  tags never need a default (empty is fine).
-- **Ingress** (`handlers/receipts.go` `QuickScan` → `resolveQuickScanFields`): loads each file's group
+  tags/comment never need a default (empty is fine).
+- **Ingress** (`handlers/receipts.go` `QuickScan` → `ReceiptService.ResolveQuickScanFields`,
+  `services/quick_scan_fields.go`): loads each file's group
   settings, **enforces required fields synchronously (400 before enqueue)** since quick scan is
   fire-and-forget, and resolves paid-by/status defaults (`UPLOADER` ⇒ the caller's user id). Categories/
   tags ride the multipart command as **per-file comma-joined id strings** (`QuickScanCommand.CategoryIds`/
-  `TagIds`; an empty paid-by string parses to `0` = unset). The async `ReceiptService.QuickScan` **merges**
-  the user's category/tag picks with the AI-filled ones (union, deduped by id; names resolved via
-  `CategoryRepository.GetByIds`/`TagsRepository.GetByIds` so the merged selections pass receipt validation).
+  `TagIds`; an empty paid-by string parses to `0` = unset). The **comment** rides as a parallel
+  `comments` string array, one entry per file — free text, so it is **not** comma-split (a comment may
+  contain commas and newlines); entries are trimmed on parse so a whitespace-only comment counts as
+  empty. It is length-checked against `models.MaxCommentLength` (500, matching the `Comment` column)
+  here rather than at the database: the receipt is created in a background task, so an over-length
+  comment would otherwise fail the insert where the user only ever sees a "queued" toast. The check
+  counts **runes, not bytes** (`utf8.RuneCountInString`) — the column is `varchar(500)`, which MySQL
+  and Postgres both measure in *characters*, so a `len()` check would be stricter than the column it
+  mirrors and would reject an accented or non-Latin comment well inside its real capacity. The limit
+  is published on the contract as `maxLength: 500` on `QuickScanCommand.comments.items` (OpenAPI
+  measures `maxLength` in characters too), and both clients cap at 500 client-side — desktop via
+  `Validators.maxLength`, mobile via `FormBuilderTextField.maxLength`.
+  `ReceiptService.QuickScan` **appends** it to `receiptCommand.Comments` (with `UserId` set — a nil one
+  fails `UpsertCommentCommand.Validate` and would take the whole receipt down) rather than replacing:
+  the default prompt doesn't emit comments, but the AI response is unmarshalled straight into an
+  `UpsertReceiptCommand`, so a group running a custom prompt can produce them.
+- **`ReceiptService.QuickScan` takes a `QuickScanParams` struct**, not positional arguments — the
+  positional form ended in several interchangeable strings (temp path / file name / task id / comment),
+  which is silently transposable. The async `ReceiptService.QuickScan`
+  **resolves** the union of the user's category/tag picks and the AI-assigned ones
+  (`resolveQuickScanCategories`/`resolveQuickScanTags`): the ids (AI first, then user, deduped) are looked
+  up via `CategoryRepository.GetByIds`/`TagsRepository.GetByIds` so each carries its real **name**. This is
+  load-bearing — the default prompt tells the model to return categories/tags **by id only** (`{ "id": N }`,
+  no name), which `UpsertReceiptCommand.Validate` (name required) would otherwise reject, silently dropping
+  the whole receipt. Ids that don't resolve (hallucinated / deleted) are **dropped**, as are ids the
+  triggering user isn't allowed to see (`resolveAllowedCategoryIds`/`resolveAllowedTagIds` reuse
+  `userBypassesGrants` + `GetGroupCategoryIdsForUser`/`GetGroupTagIdsForUser` — the same bypass+set logic as
+  the write-side check, dropping instead of rejecting). Validation deliberately stays strict (name required):
+  an id-only category reaching `UpdateReceipt` — which persists associations with `FullSaveAssociations: true`
+  — would upsert the category row and **blank its `not null; uniqueIndex` name**, so resolving names (not
+  relaxing validation) is the fix.
+- **Failed-task recording on pre-transaction errors:** `CreateReceiptUploadedSystemTask` only runs
+  **inside** the create-receipt transaction, so an error that aborts `QuickScan` *before* it (category/tag
+  resolution or receipt validation) used to leave the AI-processing tasks marked SUCCEEDED and **no record**
+  of why no receipt appeared — the failure only hit the log via `HandleError`. `QuickScan` now routes those
+  early returns through a `recordEarlyQuickScanFailure` closure that writes a FAILED `RECEIPT_UPLOADED` task
+  chained to the QUICK_SCAN parent; because `SystemTaskRepository.CreateSystemTask` flips a SUCCEEDED parent
+  to FAILED when a FAILED child references it, the QUICK_SCAN activity now surfaces the failure. `RanByUserId`
+  is left nil so the child stays hidden and only the flipped parent shows (mirroring the successful child).
 - **Grant enforcement (write-side):** because quick scan creates receipts through the service layer
   (bypassing the receipt-upsert path's `enforceReceiptGrantSelection`), the handler **synchronously
   grant-validates the user's per-file category/tag picks** before enqueue via
@@ -798,6 +2063,625 @@ a real paid-by and status — neither field is ever null/empty**. This is why th
   and admin-bypass callers are a no-op). This closes a write bypass: the UI picker already limits picks
   to the granted catalog, but a crafted request could otherwise attach a category/tag the caller can't
   see.
+- **End-to-end ingest tests** (`services/quick_scan_ingest_test.go`): the AI is mocked at the HTTP
+  transport layer (a new mutable-body httptest server `newMutableOllamaServer` + `ollamaReceiptResponse`,
+  reusing `seedReceiptImagePipeline` from `receipt_image_test.go`), a controlled
+  receipt JSON is driven through the real `ReceiptService.QuickScan`, and the persisted receipt is read
+  back via `GetFullyLoadedReceiptById` to prove **every** field survives — name/amount/date/paid-by/
+  status, receipt- and item-level categories/tags, items (amount / status / `chargedToUserId` /
+  `isTaxed` / linked items), comments, and all five custom-field value types. This pins the
+  AI→`CreateReceipt` contract (which passes items/comments/customFields through untouched, so a future
+  prompt emitting them just works), plus the paid-by/status backfill, the category/tag resolution, refunds
+  (negative amounts), and the all-or-nothing failure path (bad item status / invalid JSON persist
+  nothing). Note: `UpsertReceiptCommand.Validate` deliberately does **not** validate `CustomFields`
+  (unlike categories/tags/items/comments), so a custom-field value is persisted unchecked — the test
+  is the only guard against a regression that silently drops or mis-columns it. The resolve/failure
+  behavior above is pinned by `TestQuickScan_ResolvesIdOnlyAiCategory` (id-only AI category gets its name
+  filled), `_DropsUnresolvableAiCategory` (hallucinated id dropped), `_DropsOutOfGrantAiCategory` (a
+  grant-restricted member's AI category dropped — seeds a restricted group role via the `postSeed` hook on
+  `runQuickScanWithSetup`), and `_ValidationFailureRecordsFailedSystemTask` + the extended
+  `_MissingItemStatusFailsAndPersistsNothing` (a pre-transaction failure flips the QUICK_SCAN task to
+  FAILED and records a FAILED RECEIPT_UPLOADED task, asserted via `quickScanSystemTaskByType`), plus the
+  unit-level `TestResolveQuickScan{Categories,Tags}`. **Known gap (follow-up):** resolution is
+  **receipt-level only** — item-level categories/tags (`receiptCommand.Items[].Categories/Tags`) aren't
+  produced by the default prompt and aren't resolved here, so a future prompt emitting id-only item-level
+  categories would hit the same validation failure.
+
+## Role-required receipt fields & single-call create
+
+A group role can require its members to keep **at least one comment** and/or **at least one image**
+on the group's receipts: `GroupRoleDefinition.RequireReceiptComment` / `RequireReceiptImage`
+(`not null;default:false`, so AutoMigrate adds them and existing roles are unchanged — no migration).
+Carried on `UpsertRoleCommand` / `RoleView` / swagger `Role` + `UpsertRoleCommand` as
+`requireReceiptComment` / `requireReceiptImage`; **group scope only** (`Validate` rejects them on APP
+under the shared `grants` key, like `seesAllMembers`). Persisted by
+`RoleRepository.SetGroupRoleReceiptRequirements` — a separate map-form `Updates`, for the same
+transposable-bools reason as `SetGroupRoleIndividualGrantConfig` — called inside `CreateRole` /
+`UpdateRole`'s transactions; `GetAllRoles` and `groupRoleToView` read them back.
+
+**Never read the raw flags to decide anything — resolve them.**
+`ReceiptService.ResolveReceiptRequirements(userId, groupId)` (`services/receipt_requirements.go`)
+returns `structs.ReceiptRequirements{commentRequired, imageRequired}` with the waivers applied:
+
+- **comment** waived when the group sets `HideComments` **or** the caller lacks
+  `group.comments.create` (the same pair `IsQuickScanCommentShown` + quick scan's permission check
+  use — a caller who can't comment must never be required to);
+- **image** waived when the group sets `HideImages` (no permission waiver: images ride the create,
+  which `group.receipts.create` covers);
+- a non-member, a member with no role, and the synthetic **All** group require nothing.
+
+The flags come from `RoleRepository.GetMemberReceiptRequirementFlags` — **one** join over
+`group_members` → `group_role_definitions` → `groups` for any number of groups (All group filtered in
+Go, since `is_all_group` is nullable). The common case (no flag set) therefore costs one query; the
+settings and the permission are read only when a flag is on. The batched
+`ResolveReceiptRequirementsForGroups` builds **`AppData.groupReceiptRequirements`**
+(`map[groupId]ReceiptRequirements`) from the groups' preloaded settings and the loop's already
+resolved group permissions, still one query. Only groups where something is required are present
+(absent ⇒ nothing required); the map is never `null` (`{}` when empty). It is deliberately **not** in
+AppData's swagger `required` list, so a newer mobile build can still parse an older server's payload.
+
+### `POST /receipt/withFiles` (`createReceiptWithFiles`)
+
+Create is **one multipart call** carrying the receipt, its comments and its images, so the server
+sees the images at create time (the old flow — JSON create, then one `POST /receiptImage` per image —
+never let it) and the create is atomic.
+
+- **Wire shape:** `multipart/form-data` with part **`receipt`** = `UpsertReceiptCommand` JSON (comments
+  included) and zero or more **`files`** parts (binary). Swagger declares
+  `encoding: receipt: contentType: application/json`. Generated clients differ in how they encode a
+  model inside multipart, so `CreateReceiptWithFilesCommand.LoadDataFromRequest` accepts `receipt`
+  **either as a plain form value or as a file part** (e.g. `application/json`), in that order. A
+  missing/malformed part or a failed `Validate` is a **400** (the legacy JSON create still uses 500).
+- **Order:** parse → `group.receipts.create` gate (`HandleRequest`) → **every file through
+  `ValidateFileType` before anything is written** (400 keyed `files.<i>`) → the shared
+  `enforceReceiptCreate` (grant selection, member visibility, custom-field selection — 403s — then
+  the requirement check) → `ReceiptService.CreateReceiptWithFiles` → `writeCreatedReceipt` (the same
+  category/tag strip + member masking as `CreateReceipt`). Both create handlers share
+  `enforceReceiptCreate` and `writeCreatedReceipt`, so they cannot drift.
+- **`CreateReceiptWithFiles`** runs `CreateReceipt(…, createSystemTask=false)` plus
+  `CreateReceiptImage` per file in **one `db.Transaction`**. Files are written inside it (the new
+  receipt's group is only visible there), so every written path is tracked and removed if the
+  transaction fails — the `DuplicateReceipt` pattern. `CreateReceiptImage` now returns the row (with
+  its id) alongside a **write** error so a partially written file can be located too. The
+  `RECEIPT_UPLOADED` task is recorded afterwards from a deferred `CreateSystemTaskFromError`, like
+  `DuplicateReceipt` — `CreateReceipt`'s own task write would run on another connection. The response
+  is re-read after commit, so it carries `imageFiles`.
+- **Size:** `ParseMultipartForm(MultipartFormMaxSize)` is only the in-memory threshold (larger parts
+  spill to temp files, which net/http removes after the request). The real cap is nginx's
+  `client_max_body_size 50M` in `docker/default.conf`, which now bounds **all** of a create's images
+  together, as it already does for a multi-file quick scan.
+- **The old `POST /receipt/` stays** (`deprecated: true` in swagger) for already-released mobile
+  builds. It enforces the same requirements with an image count of 0, so while an image is required
+  it always 400s — with a `files` message telling the user to **update their app**.
+
+### Where the requirement is enforced
+
+`handlers/receipt_requirement_enforcement.go` — every failure is a **400 validator error keyed
+`comments` / `files`** (`WriteValidatorErrorResponse`):
+
+- **Both creates** — comment = any non-blank `command.Comments[].comment`; image = files in the call.
+- **`UpdateReceipt`** — against the **target** group (the destination when moving, so a move into a
+  requiring group is refused), using the **stored** `currentReceipt.Comments` / `ImageFiles`
+  (`GetFullyLoadedReceiptById` preloads both). Edit mode adds images and comments immediately through
+  their own endpoints, so the stored receipt is the truth; judging the command would let a client
+  claim a comment it never saved.
+- **`DeleteComment` / `RemoveReceiptImage`** — refuse removing the **last** one while it is required
+  in the receipt's group (`enforceCommentDeleteKeepsRequired` / `enforceImageDeleteKeepsRequired`).
+  To swap the only image, upload the new one first.
+- **Quick scan** (`ResolveQuickScanFields`) — a role-required comment **shows and requires** the
+  field even when the group's quick-scan config leaves it off (the resolver already carries the
+  `HideComments` / permission waivers). Quick scan always has an image. Resolved once per group.
+- **Out of scope:** bulk status update, duplicate, email ingest (no user) and import.
+
+### The synthetic "All" group is never a destination
+
+**Both creates and Quick Scan reject it with a 400**, as `UpdateReceipt` already did for a move.
+A caller's All-group membership carries the default unrestricted role, so its
+`group.receipts.create` passes the declarative gate, and the receipt would then live under a role
+that sidesteps every real group's grant and visibility controls. One helper,
+`isAllGroupDestination` (`handlers/receipts.go`), holds the rule for all four paths; a group that
+does not exist is *not* the All group, so the permission check after it still denies that.
+- **Creates:** checked first inside `enforceReceiptCreate`, so it answers before any 403 check and
+  before any file is written (`allGroupCreateMessage`).
+- **Quick Scan:** checked per file before `ResolveQuickScanFields` and before anything is enqueued;
+  a 400 validator error keyed `files.<i>.groupId`, matching that resolver's keys.
+- Neither client can send it in normal use (both pickers exclude the All group), so this closes a
+  crafted-request hole rather than changing a flow. Email ingest and import are out of scope: their
+  destination is configuration, not caller input.
+
+Tests: `commands/upsert_role_command_test.go` (APP rejected), `repositories/roles_test.go`
+(`TestGroupRoleReceiptRequirementsRoundTrip` incl. toggle-off via `GetAllRoles`,
+`TestGetMemberReceiptRequirementFlags`), `services/roles_test.go` (service round-trip),
+`services/receipt_requirements_test.go` (resolver matrix incl. batched parity, nothing-required
+cases, AppData `{}`, `CreateReceiptWithFiles` happy path + a mid-transaction failure leaving no
+receipt/FileData/comment/file and a FAILED task, quick-scan role comment), and
+`handlers/receipt_requirement_enforcement_test.go` (both `receipt` encodings, invalid file type
+writes nothing, both creates, update incl. a move, last comment/image delete, quick scan).
+
+That handler file also pins the new endpoint on its own, because the old one shares its checks and
+would otherwise hide a regression in the new one. Each case was verified to **fail** when its
+production line is broken:
+- **Zero images** — the common case: no requirement, and a comment-only requirement, both create a
+  receipt with no `files` part (fails if the image rule fires when not required).
+- **The shared 403 chain** — disallowed category, new category without `app.categories.create`, a
+  non-visible payer, a custom field without `app.custom-fields.read`, each with an image attached
+  and asserting nothing was written (`assertNothingWritten`: no receipt/FileData/comment rows, no
+  file in the group directory), plus a granted-category positive control. These fail if
+  `CreateReceiptWithFiles` stops calling `enforceReceiptCreate`.
+- **Invalid bodies** — malformed JSON as a form value or as a JSON file part, an empty `receipt`, a
+  non-multipart body, and a receipt failing `Validate` (400 keyed `name`), all writing nothing.
+  These fail if a parse error stops being a 400.
+
+`writeCreatedReceipt`'s category/tag strip and member masking are **not** targeted there: on a fresh
+create the caller can only attach what it may see and is itself the creator, so there is nothing for
+them to hide.
+
+**The partial-write clean-up has a test hook.** `CreateReceiptImage` writes through the unexported
+`writeReceiptImageFile`, which `repositories.SetReceiptImageWriterForTests` swaps (returning a
+restore func). A real filesystem will not fail halfway through a file on demand, and that is the one
+case where a row exists and a truncated file sits on disk: `CreateReceiptWithFiles` tracks the path
+from the row id so the rollback removes it. `TestCreateReceiptWithFiles_PartialWriteIsRemoved` writes
+half the second image and then fails; it was checked to fail when a failed write's path is not
+tracked. Nothing else reassigns the variable.
+
+**Parsing has direct unit tests** in `commands/create_receipt_with_files_command_test.go` (no DB):
+both encodings, the documented precedence (a non-empty form value wins over the file part; an empty
+one falls back to it), every error, and `files` keeping order, names and exact bytes, with an absent
+`files` giving an empty, non-nil slice. The precedence case was checked to fail when the two reads
+are swapped. The All-group rejections are pinned by `TestCreateReceiptWithFiles_AllGroupRejected`,
+`TestCreateReceipt_LegacyEndpointAllGroupRejected` and `TestQuickScanHandlerAllGroupRejected`, each
+with a real-group positive control.
+
+## Group Default Custom Fields
+
+Group admins declare, in **Group Receipt Settings**, the set of custom fields that should always be
+present on that group's receipts (a tax field, a PO number, a cost centre). The receipt form pre-adds
+them on create and re-applies the target group's set when the user switches groups — each group is
+effectively its own receipt template. A second, opt-in toggle
+(`applyDefaultCustomFieldsOnIngest`) extends the same set to receipts the **server** creates (quick
+scan and email integration).
+
+A default is a **starting point, never a requirement**: the user may remove any of them and nothing
+validates their presence. There is deliberately **no notion of a required custom field** — custom
+field validation does not exist in this codebase and would belong on the custom field itself, not on
+this screen. `UpdateGroupReceiptSettingsCommand.Validate` therefore checks nothing here.
+
+- **Join model** (`models/group_receipt_settings_custom_field.go`): `GroupReceiptSettingsCustomField
+  {GroupId, CustomFieldId}`, composite primary key, `CustomFieldId` indexed. Two deliberate choices,
+  both spelled out in the model's doc comment:
+  - **Keyed on `GroupId`, NOT the `GroupReceiptSettings` row id.** `GroupRepository.GetGroupById`
+    lazily creates a missing settings row and **discards** the created record, so
+    `group.GroupReceiptSettings.ID` is still `0` on the very call that created it — keying on it
+    would silently write rows against id `0`. `GroupId` is `not null;unique` on the settings model
+    and is what every caller already holds (quick scan, the email handler, group delete, the PUT).
+  - **An explicit join model, not a GORM `many2many []CustomField`.** `UpdateGroupReceiptSettings`
+    does `Preload(clause.Associations)` then `db.Select("*").Model(...).Updates(...)`, which
+    full-save-associates every loaded association — that would upsert the joined `CustomField` rows
+    and can blank a `not null` `CustomField.Name` (the same failure documented above for AI-assigned
+    categories). Inserts therefore use **`Omit("CustomField").Create(&rows)`**, matching
+    `replaceReportTemplateGroups`. Pinned by
+    `TestUpdateGroupReceiptSettingsDoesNotBlankCustomFieldName`.
+- **Model** (`models/group_receipt_settings.go`): `ApplyDefaultCustomFieldsOnIngest bool`
+  (`not null;default:false`, so upgrading installs are unchanged until an admin opts in) and the
+  transient `DefaultCustomFieldIds []uint` (`gorm:"-"`).
+- **Hydration is an explicit batched loader, NOT a GORM `AfterFind` hook.**
+  `GroupReceiptSettingsRepository.LoadDefaultCustomFieldIds([]*GroupReceiptSettings)` runs **one**
+  `WHERE group_id IN (?)` query (`ORDER BY custom_field_id` for a deterministic order) and mutates
+  the rows in place; `LoadDefaultCustomFieldIdsForGroups([]Group)` is the convenience wrapper. This
+  mirrors `GroupMemberRepository.LoadMemberGrants`, which fills `GroupMember.CategoryGrants`/
+  `TagGrants` the same way. A hook was considered and rejected: it would be the only `AfterFind` in
+  the codebase, adds an N+1 inside `Preload(clause.Associations)`, needs a `NewDB` session to avoid
+  inheriting the preload's statement, **and would not even be correct** —
+  `UpdateGroupReceiptSettings` returns the in-memory struct it mutated rather than re-reading, so
+  the PUT response would carry the *old* ids, which the desktop writes straight into its group state.
+  Called at every boundary that serializes a group's receipt settings, mirroring the
+  `LoadMemberGrantsFor*` call sites: `services/auth.go` (AppData, beside
+  `LoadMemberGrantsForGroups`), `handlers/groups.go` `GetGroupsForUser`, `GetPagedGroups` and
+  `CreateGroup`, `repositories/groups.go` `GetGroupById` (which `UpdateGroup` also returns through),
+  `GetGroupReceiptSettingsByGroupId`, and the `UpdateGroupReceiptSettings` return value.
+  - **The two easy ones to miss are `GetPagedGroups` and `CreateGroup`**, and both shipped without
+    the call at first. `GetPagedGroups` looks covered because it uses `Preload(clause.Associations)`
+    — which loads the settings *row* but cannot touch a `gorm:"-"` field — and its load must run
+    **before** the `anyData[i] = groups[i]` copy, which takes each group by value. `CreateGroup`
+    returns a `Find` that preloads only `GroupMembers`, so its settings object is zero-valued
+    **including `GroupId`**; set that first or the loader keys its lookup on group 0 and the empty
+    result is right by accident. Both are pinned by response-shape tests (below).
+  - **The `associatedGroup` / `associatedApiKeys` list filters are default-deny.** `GetPagedGroups`
+    only permission-gates the literal `ALL` (via `app.groups.read`) and the repository only scoped the
+    literal `MINE` to the caller — so any *other* value (empty or bogus) fell through both and returned
+    every group in the system (same shape for `GetPagedApiKeys` / `app.api-keys.read-any`). Fixed on
+    two layers: the command `Validate` rejects anything that is not exactly `MINE`/`ALL` (400), and the
+    repository's filter is now `if ALL {…} else {scope to caller}` so an unexpected value fails closed
+    to the caller's own rows. Tests: `commands/paged_group_request_command_test.go`,
+    `commands/paged_api_key_request_command_test.go`,
+    `repositories/api_key_test.go` (`TestGetPagedApiKeys_UnknownFilterFailsClosedToOwnKeys`).
+- **An empty set must serialize as `[]`, never `null`.** `defaultCustomFieldIdsOrEmpty` normalizes it
+  inside the loader (mirroring `grantIdsOrEmpty`) so every read path is covered at once. The
+  generated Dart deserializer has **no null guard**, so a `null` would fail the **whole** AppData
+  payload on already-released Android builds — the exact class of the two documented login outages.
+  Guarded by a `json.Marshal` test in `repositories/group_receipt_settings_test.go` and a
+  response-shape test in `handlers/group_default_custom_fields_test.go`.
+- **Command semantics: BOTH new fields are POINTERS, and `nil` means LEAVE UNCHANGED.**
+  `UpdateGroupReceiptSettingsCommand.DefaultCustomFieldIds *[]uint` and
+  `ApplyDefaultCustomFieldsOnIngest *bool`. The desktop hides this whole section from an admin
+  without `app.custom-fields.read`, so its `getRawValue()` omits both keys; a non-pointer `bool`
+  would unmarshal as `false` and the repository's unconditional field-by-field assignment would
+  **wipe the stored toggle** — byte for byte the `hideComments` bug documented in
+  `desktop/CLAUDE.md`. An explicit `[]` clears the set.
+  - **Same field-by-field assignment hazard as the quick-scan config:**
+    `UpdateGroupReceiptSettings` assigns every setting one at a time, so a new setting that isn't
+    added to that block silently never persists (no compile error, no test failure). The
+    round-trip + `nil`-leaves-unchanged tests exist specifically to catch that.
+- **Transaction**: `UpdateGroupReceiptSettings` wraps the scalar update **and** the join replace in
+  one `db.Transaction(...)` (precedent: `CreateReportTemplate`), so a rejected save changes nothing.
+  Callers pass a `nil` TX today, and a nested GORM transaction degrades to a savepoint, so this is
+  safe either way. `replaceGroupDefaultCustomFields` is delete-by-`group_id`-then-insert, deduping
+  the submitted ids so a repeated id can't violate the composite primary key.
+- **Handler guards** (`handlers/groups.go` `UpdateGroupReceiptSettings`) — the endpoint is gated on
+  the group's `GroupUpdate` only, so two extra checks run when `DefaultCustomFieldIds != nil`
+  (a `nil` pointer means the client didn't touch the selection and stays allowed):
+  - **403** without the app-level `app.custom-fields.read`. Without this a group admin could attach
+    fields whose catalog they cannot read, mirroring `enforceReceiptCustomFieldSelection`.
+  - **400** with error key `defaultCustomFieldIds` when any submitted id doesn't exist (via the new
+    `CustomFieldRepository.GetCustomFieldsByIds`). An unknown id would otherwise persist as a row
+    nothing can ever resolve, and the receipt form would silently skip it forever.
+- **Delete cascades**, both explicit rather than FK-driven, matching every other cascade nearby:
+  - `CustomFieldRepository.DeleteCustomField` gains a fourth delete inside its existing transaction,
+    before the `CustomField` row: the field is removed from **every** group's default set.
+  - `GroupService.DeleteGroup` deletes the join rows beside the member-grant cleanup. The receipt
+    settings delete uses `Select(clause.Associations)`, which cannot reach them — `gorm:"-"` means
+    the join is not an association of the settings model at all.
+- **Server-side ingest** (`services/default_custom_fields.go`) — one helper shared by both ingest
+  paths so they cannot drift. `ApplyDefaultCustomFields(settings, *command)` is pure: it no-ops
+  unless `ApplyDefaultCustomFieldsOnIngest`, then appends an **empty**
+  `UpsertCustomFieldValueCommand{CustomFieldId: id}` for each default id the command doesn't already
+  carry. **De-duplication matters** — the AI response is unmarshalled straight into an
+  `UpsertReceiptCommand`, so a group running a custom prompt can already have produced a value for a
+  defaulted field. `ApplyGroupDefaultCustomFields(tx, groupId, *command)` is the thin loader wrapper;
+  it treats a **missing settings row as "not opted in" rather than an error**, because the row is
+  created lazily and a group never opened in the settings UI legitimately has none. Call sites, both
+  immediately before `Validate`:
+  - `ReceiptService.QuickScan` — after the `resolveQuickScanCategories`/`resolveQuickScanTags`/
+    comment-append block.
+  - `wranglerasynq/email_process_handler.go` — after `command.CreatedByString = "Email Integration"`.
+  `services/import.go` deliberately does **not** apply defaults — it replays existing receipts.
+  `rerun_task_payload.go` routes through `ReceiptService.QuickScan`, so it inherits the behaviour.
+- **Users without `app.custom-fields.read` are gated out client-side**: the desktop and mobile
+  receipt forms skip ids absent from their loaded catalog, which is empty without the permission, so
+  their save would never have passed `enforceReceiptCustomFieldSelection` anyway.
+- **Tests**: `repositories/group_receipt_settings_test.go` (round-trip, replace, `[]` clears, `nil`
+  leaves both unchanged, `json.Marshal` gives `[]`, the not-blanked custom field name, the batched
+  loader across two groups, `GetGroupById` hydration), `repositories/custom_fields_test.go` (a
+  deleted field leaves every group's set, two groups seeded), `services/default_custom_fields_test.go`
+  (toggle-off no-op, appends only missing ids, no duplicate, missing settings row, group delete
+  leaves zero join rows), `services/quick_scan_ingest_test.go`
+  (`TestQuickScan_{Applies,Skips}GroupDefaultCustomFields*`), and
+  `handlers/group_default_custom_fields_test.go` (400 unknown id writes nothing, 403 without the
+  permission, a save omitting both keys leaves the stored config untouched, `[]` on the wire).
+
+## Receipt Summary
+
+A block of totals under the receipts table, aggregated over the **whole current filter result set**
+rather than the visible page: a receipt count and amount total overall, then the same figures for
+each status the group has configured. Configuration lives on `GroupReceiptSettings` and applies to
+every member — it is not a per-user preference.
+
+**Four settings, two join tables.** `ReceiptSummaryEnabled` is a plain column (off by
+default, so existing installs are unchanged) and so is `ReceiptSummaryPosition` (see below).
+`ReceiptSummaryCustomFieldIds` and
+`ReceiptSummaryStatuses` are `gorm:"-"` projections over
+`GroupReceiptSettingsSummaryCustomField` and `GroupReceiptSettingsSummaryStatus`, both keyed on
+**GroupId** for the same reason `GroupReceiptSettingsCustomField` is (a lazily created settings row
+still has `ID == 0` on the call that created it).
+
+- **Not a `purpose` discriminator on the existing defaults join.** That table's PK is
+  `{GroupId, CustomFieldId}`, so a discriminator has to join the key — a PK change `AutoMigrate`
+  does not perform on a deployed install, and `replaceGroupDefaultCustomFields` deletes
+  `WHERE group_id = ?` unscoped, so saving the defaults would silently wipe the summary selection.
+  `TestUpdateGroupReceiptSettingsKeepsDefaultAndSummaryFieldSetsSeparate` is the regression guard.
+- **Not a delimited or JSON column for the statuses.** The house pattern for "a parent owns a set of
+  enum-ish strings" is row-per-value (`GroupRolePermission`), and a per-row column keeps
+  `ReceiptStatus.Value()`'s `driver.Valuer` rejection at the DB boundary for free.
+- **`size:32` on the status column is load-bearing.** A Go string maps to an unbounded TEXT, and
+  MySQL/MariaDB reject that in a key — without it the table creates fine on SQLite and fails
+  AutoMigrate on MySQL.
+
+**`LoadDefaultCustomFieldIds` is now `LoadSettingsProjections`** (and `…ForGroups`), and loads **all
+three** projections. The rename was deliberate: it makes the compiler find every call site, and
+loading them together means no caller can hydrate one and miss another — which would emit a `null`
+where swagger promises an array, the failure that only shows up on an already-released mobile build.
+The `[]`-never-`null` rule covers all three.
+
+**The command's three fields are pointers**, `nil` == leave unchanged, each for its own reason:
+the custom field ids because the desktop omits that key for an admin without `app.custom-fields.read`;
+the statuses because a plain slice cannot tell "omitted" from the legitimate "clear every status";
+and the bool because a plain one unmarshals as `false` for any client that does not send the key and
+would silently switch a configured summary off.
+
+**The permission gate is deliberately asymmetric.** The CURRENCY field selection joins the existing
+`app.custom-fields.read` 403 because it names catalog entries. `receiptSummaryEnabled` and
+`receiptSummaryStatuses` stay **outside** it — neither reads the catalog, and gating them would lock
+an admin without that permission out of the feature entirely. That is the difference from
+`applyDefaultCustomFieldsOnIngest`, which *is* gated because it decides what the (to such a caller
+invisible) default set does. Validation: unknown id → 400, **non-CURRENCY id → 400** (only
+`CurrencyValue` is summed, so a TEXT field would total `0.00` forever and read as data rather than
+misconfiguration), invalid status → 400 via the existing `isValidReceiptStatus`.
+
+### Where the block renders — `ReceiptSummaryPosition`
+
+`TOP` or `BOTTOM`, per group, defaulting to **BOTTOM** — where the summary rendered before the
+setting existed, so an install that never touches it is unchanged. Modelled on
+`CurrencySymbolPosition` (`models/receipt_summary_position.go`): a Go string type with `Scan` /
+`Value`, no DB enum and no CHECK constraint, and a plain column carrying `gorm:"default:BOTTOM"` —
+`AutoMigrate` adds it and backfills existing rows with the default on all three engines, so there
+is **no migration**.
+
+- **It rides on the summary RESPONSE, not just on the settings.** `ReceiptSummary.Position` is
+  what both clients render from. The same argument as `Enabled`: a client's cached
+  `groupReceiptSettings` is stale the moment an admin changes the configuration, and placement is
+  configuration. Reading it from the response is what stops the block rendering in the old place
+  until the next AppData refresh.
+- **The server never emits `""`.** A closed Dart `EnumClass` throws on an unrecognized wire value
+  and fails the WHOLE payload — `GroupReceiptSettings` rides on AppData, i.e. on **login**, which
+  is exactly the two documented `Permission` outages. Empty is genuinely reachable (`loadSettings`
+  maps a missing settings row to a *zero* `GroupReceiptSettings`), so `OrDefault()` normalizes it
+  at both emit points: on the summary response, and in `LoadSettingsProjections` — the one batched
+  hydrator every settings read passes through. **The swagger enum carries TOP and BOTTOM only** —
+  no `""` member, matching the `CurrencySymbolPosition` precedent beside it — and the generated
+  Dart enum's `fallback: true` sits on `BOTTOM`, so a client meeting a value added *later* lands on
+  the same placement `OrDefault()` would have sent. Client and server agree by construction, and an
+  empty position is not expressible on the write side at all.
+- **The command field is a pointer**, like the other three: a non-pointer would unmarshal to `""`
+  for any caller that omits the key, and the repository's assignment would blank a configured
+  position. It must be assigned inside the `if command.X != nil` block in
+  `UpdateGroupReceiptSettings` — the write is `Select("*")`, so a field missing from that block is
+  actively zeroed, silently.
+- **A `nil` pointer OMITS the column from the UPDATE** rather than writing back the value read at
+  load time. `UpdateGroupReceiptSettings` builds an `omittedColumns` list from the three nil
+  pointers and passes it to `Select("*").Omit(...)`, mirroring
+  `SystemSettingsRepository.UpdateSystemSettings` (`repositories/system_settings.go`). Writing the
+  loaded value back costs two things: a concurrent admin's change is clobbered by a value read
+  before it landed, and for an **enum** the stored value goes back through `Value()` — so a
+  position this build does not recognize (a newer release's member, seen after a downgrade) fails
+  an otherwise unrelated settings save with a 500. `Omit` also preserves that value for the trip
+  back up, where `OrDefault()` already keeps it off the wire.
+  `TestUpdateGroupReceiptSettingsToleratesAnUnknownStoredPosition` pins it.
+- **It needs no permission of its own.** Like `ReceiptSummaryEnabled` and `ReceiptSummaryStatuses`
+  and unlike `ReceiptSummaryCustomFieldIds`, it reads no catalog — gating it on
+  `app.custom-fields.read` would leave such an admin able to turn the summary on but not to say
+  where it goes. `TestUpdateGroupReceiptSettingsAllowsSummaryPositionWithoutCustomFieldPermission`
+  pins that.
+- **Validated in the command, not at the DB boundary.** `Validate()` routes it through its own
+  `Value()` (the `pie_chart_data_command.go` style), which turns what the DB layer would surface as
+  a generic 500 into a field-level 400.
+
+### `POST /api/receipt/group/{groupId}/summary`
+
+Gated on **`group.receipts.read`** — the same permission as the table it sits under. Not a new
+permission (the endpoint returns only aggregates of rows the caller can already page through, so a
+separate gate would just produce a table whose own totals 403), not `group.widgets.read` (this is not
+a dashboard widget), and **no `app.custom-fields.read` gate**: that permission covers the catalog
+endpoints and `enforceReceiptCustomFieldSelection`, which explicitly lets a non-holder read the
+values of fields already on a receipt, and `FULL_RECEIPT_ASSOCIATIONS` already ships those names to
+any receipt reader.
+
+`ReceiptSummaryCommand` carries the filter and an optional `ConfigurationGroupId`, **not** the field
+or status list — the configuration is the group's and applies to everyone, so a client must not be
+able to add a column or opt out. `ConfigurationGroupId` exists for the synthetic "All" group, which
+spans several groups and has no meaningful settings of its own.
+
+**Borrowing a configuration is the All group's privilege alone.** A real group must use its own, or a
+member could render group A's receipts under group B's statuses and currency fields — overriding what
+A's admin configured, and switching on a summary A has turned off, which is exactly the invariant
+above. `resolveConfigurationGroupId` therefore tests `IsAllGroup(uintGroupId)` first
+(`ErrConfigurationGroupNotAllGroup` → **400**, a malformed request rather than an access failure), and
+only then authorizes the named group with `HasGroupPermissions`
+(`ErrConfigurationGroupForbidden` → **403**), or it becomes a way to enumerate another group's
+configured field names. **That order matters**: rejecting on the request's shape first means the
+response cannot depend on whether the caller can read the named group, so the endpoint can never be
+used to probe for another group's existence — pinned by
+`TestReceiptSummary_ConfigurationGroupRejectedBeforeAccessCheck`, which asserts an unreadable group and
+a nonexistent one come back identically. The desktop is unaffected: it sends the viewed group's own id
+for a real group, so only the All group ever sends a differing one.
+
+`services/receipt_summary.go` follows `pie_chart.go`: `IntersectReceiptFilterWithGrants`, then
+`GetPagedReceiptsByGroupId` unpaged, then a Go fold. That one repository call is what supplies the
+filter builder, the All-group `group_id IN (...)` fan-out **and** paid-by visibility — so the totals
+cannot drift from the rows above them. `MaskReceiptsForMemberVisibility` and
+`SubstituteRestrictedCategoriesTags` are not called: the first only masks user references, the second
+only matters for category/tag bucketing.
+
+**Go `decimal` fold, not SQL `SUM`.** There is no `SUM` anywhere in this API. `amount` is
+`decimal(10,2)`, but SQLite has no decimal type, so `SUM(amount)` returns an IEEE double there and an
+exact decimal on Postgres/MySQL — the same endpoint would report different cents on the three
+supported engines, on exactly the money this feature exists to report
+(`TestReceiptSummary_DecimalPrecision`). A SUM query would also have to re-derive the access controls
+above, where the failure mode is a totals row that counts receipts the viewer may not see.
+
+**Rules that are easy to get backwards:**
+
+- Every **configured** status is seeded before the walk, so one matching no receipt still renders as
+  a zero row — that is what keeps the block's shape steady as the filter narrows.
+- A receipt whose status is **not** configured still counts toward the overall row. It is in the
+  filter result, so excluding it would make the total disagree with the table's own count.
+- Where a receipt holds **several** values for one custom field, **lowest id wins**, mirroring
+  `reporting/receiptsource.addCustomFields`. `custom_field_values` has no unique index on
+  `(receipt_id, custom_field_id)` and the association loads without an `ORDER BY`, so preferring
+  whichever came back first would let two identical requests return different numbers. A row with no
+  `CurrencyValue` never wins, so an empty low-id row cannot hide a real one.
+- Columns are built from the configured id order, never by ranging the map — a summary whose columns
+  reshuffle between requests is unreadable.
+- `enabled: false` comes back at a normal **200** with zeroed rows, and returns **before any receipt
+  query**. That is both the cost floor for every install that has not opted in and the reason a
+  client with stale group settings renders nothing rather than an error.
+
+**Money crosses the wire as a string** (`decimal.Decimal` marshals quoted), matching `Receipt.amount`
+and `CustomFieldValue.currencyValue`. `PieChartDataPoint`'s `float64` is the outlier, forced on it by
+the charting library.
+
+**Cost.** This loads the filtered set unpaged — the same bargain `PieChartService` and
+`ReportDataService` already make, but the receipts table is a hotter screen than the dashboard. It is
+bounded on four sides: a group that has not enabled the summary never reaches a query, the desktop
+does not re-request on paging or sorting, the desktop skips the request entirely when no configured
+group resolves, and `CustomFields` is preloaded only when a field is configured. If it ever needs
+more, the next step is a `SUM` fast path behind the same service signature — not caching.
+
+## Custom fields on the receipts list (columns & sorting)
+
+The desktop receipts table can show a column per custom field and sort on it. Two things on this side
+make that work; both have a sharp edge.
+
+### The list response always carries custom field values *with their definitions*
+
+`GetPagedReceiptsForGroup` (`handlers/receipts.go`) preloads
+`constants.CUSTOM_FIELD_ASSOCIATIONS` — the value, its `CustomField`, and that field's `Options` —
+unconditionally, not only under `fullReceipts`. `FULL_RECEIPT_ASSOCIATIONS` is composed from the same
+constant so the two lists cannot drift.
+
+**Loading the values without their definitions breaks the mobile app.**
+`models.CustomFieldValue.CustomField` is a non-pointer struct with no `omitempty`, so it serializes
+even when unloaded — as `{"id":0,"name":"","type":""}`. Mobile calls this exact endpoint
+(`getReceiptsForGroup`) and deserializes each row into a typed `Receipt`; its generated
+`CustomFieldType` is a closed enum with no empty member, and the `one_of` `AnyOfSerializer` swallows
+the failure rather than reporting it, so every row of the receipts list silently collapses. Same
+failure mode as the `aggFunc` omitempty fix — see `mobile/CLAUDE.md` → "Serialization contract".
+`TestPagedReceiptCustomFieldsAlwaysCarryTheirDefinition` asserts the response never contains
+`"type":""`.
+
+**That guard is duplicated at the handler on purpose.** The repository test hands the association
+list to the repository itself, so it stays green if `GetPagedReceiptsForGroup` ever stops choosing
+`CUSTOM_FIELD_ASSOCIATIONS` — the one line that actually decides. `handlers/receipts_test.go` →
+`TestPagedReceiptsCarryCustomFieldDefinitionsWithoutFullReceipts` drives the handler with
+`fullReceipts: false` and asserts on the **raw response bytes**, which is where `"type":""` exists at
+all. Verified to fail both ways the line can regress: preloading nothing, and preloading the values
+without their definitions.
+
+This is not a new disclosure: the single-receipt endpoints already returned these values to any
+holder of `group.receipts.read`, and `MaskReceiptsForMemberVisibility` already masks their created-by.
+
+### Sorting by `custom_<id>`
+
+`orderBy` accepts the reporting engine's own key shape, parsed by
+`receiptsource.ParseCustomFieldKey` (digits only — `custom_1_month` and `custom_abc` are rejected, and
+a malformed value still errors out, which is the guard keeping `orderBy` out of the SQL it is
+concatenated into). One key vocabulary for reports and the table.
+
+**The parse is 32-bit on purpose.** The id it yields is a `models.CustomField` id, i.e. a `uint` —
+which is 32 bits on a 32-bit build, where parsing at 64 bits and narrowing would not merely overflow
+but name a *different* field (`custom_4294967297` would resolve to field `1`). No id reaches 2^32, so
+capping only rejects keys that cannot name a real field, and the caller then treats them like any
+other malformed key. Flagged by CodeQL as an incorrect integer conversion.
+
+**The sort DIRECTION is never concatenated on a custom-field path.** Both fallback branches hand it to
+`BaseRepository.Sort`, which renders `ASC`/`DESC` from a `Desc bool` on `clause.OrderByColumn` — the
+same convention the other twelve repositories use — and the main ordering path picks its keyword from
+literals, because `clause.OrderBy{Expression}` leaves `Columns`/`Desc` unavailable (see below).
+`GetPagedReceiptsByGroupId` does validate the direction up front with `commands.IsValidSortDirection`,
+but that check sits ~350 lines upstream, so the safety is deliberately restated at the point the SQL is
+built rather than inherited from one call path. CodeQL flags the concatenated form as a query built
+from user-controlled sources; the remaining concatenation at the built-in-column branch is left alone,
+its `orderBy` and direction both being allow-listed against literals by `isTrustedValue`.
+
+- **A correlated subquery, never a join.** `custom_field_values` has no unique index on
+  `(receipt_id, custom_field_id)`, so a join multiplies receipt rows and corrupts both the total count
+  and pagination. `orderByCustomField` builds the subquery as an ordinary `*gorm.DB` and passes it as
+  a bind var — gorm expands a `*gorm.DB` var into its own built SQL (`gorm/statement.go`), so this
+  stays in the query builder.
+- **Which duplicate wins matches reporting**: lowest id among the values that actually resolve. Hence
+  the `IS NOT NULL` clause, and hence a SELECT **inner**-joins `custom_field_options` — an
+  unresolvable option id is skipped, not preferred. Drop either and the table sorts a receipt as "no
+  value" while a report shows one for it.
+- **`currency_value` is a TEXT column, so CURRENCY sorts through a cast.**
+  `CustomFieldValue.CurrencyValue` is a `*decimal.Decimal` with **no `gorm:"type:"` tag**, unlike
+  `Receipt.Amount` (`gorm:"type:decimal(10,2)"`). gorm types an untagged `driver.Valuer` by what
+  `Value()` returns, and `decimal.Decimal.Value()` returns a string — so a bare sort is lexicographic
+  (`"100" < "20"`). `CAST(... AS DECIMAL(20,6))` is ANSI and needs no dialect branching: MySQL and
+  Postgres take `DECIMAL(p,s)` directly, SQLite gives that type name NUMERIC affinity. **Retyping the
+  column is the better fix** and would remove the cast entirely (gorm's Postgres migrator does emit
+  the required `USING ?::?`), but it is a migration over existing data and belongs in its own change.
+  The same trap applies to any future untagged decimal field.
+- **The direction and the `receipts.id` tiebreaker live inside the one `clause.Expr`.**
+  `clause.OrderBy` builds its `Expression` *instead of* its `Columns` and `Desc`, and a second
+  `Order()` call replaces the clause rather than appending to it — silently. The tiebreaker is not
+  cosmetic: a BOOLEAN or SELECT field has a handful of distinct values, and without a unique last term
+  `LIMIT`/`OFFSET` paging repeats and skips rows.
+- **A deleted custom field falls back to `created_at` rather than erroring.** Clients persist their
+  sort, and `handlers/receipts.go` maps every repository error to a 500, so erroring would make the
+  list fail to load at all for anyone holding a stale sort. Both fallbacks (the unknown field and the
+  unsortable type) go through `defaultReceiptOrder`, which **carries the same `receipts.id`
+  tiebreaker** as the custom-field path — `created_at` is not unique, and receipts created in one
+  batch share a timestamp, so without it `LIMIT`/`OFFSET` paging repeats and skips rows. That helper
+  can chain the tiebreaker onto `BaseRepository.Sort` because both clauses are **column**-based and
+  gorm appends them; the expression form above cannot, which is why it builds one `clause.Expr`.
+- **NULL ordering is engine-dependent** and deliberately not normalised: SQLite and MySQL sort NULL
+  first, Postgres last, so receipts with no value land at opposite ends. `NULLS LAST` is not portable
+  (MySQL 8 and MariaDB reject it), and normalising it would mean evaluating the subquery twice. This
+  matches the existing nullable built-in column, `resolved_date`.
+- **The subquery is served by a composite index.** `CustomFieldValue` declares
+  `idx_custom_field_value_lookup` over `(receipt_id, custom_field_id)` — without it the subquery is a
+  full scan of `custom_field_values` **per candidate receipt** on SQLite and Postgres (MySQL gets one
+  from the FK). It is two columns, not three: the `ORDER BY id LIMIT 1` would nominally like `id`
+  trailing, but `ID` lives on the embedded `BaseModel` and cannot be tagged without overriding the
+  field, and the two-column seek already narrows to roughly one row. Declared **only** as a model tag —
+  there is no hand-written schema per engine, so AutoMigrate creates it everywhere.
+- `POST /api/export/{groupId}` deserializes the same `ReceiptPagedRequestCommand` and calls the same
+  repository method, so it inherits both behaviours.
+- **Tests**: `repositories/receipt_custom_field_sort_test.go` — one per type (CURRENCY with values
+  that sort differently as text than as numbers), value-less receipts still listed with a matching
+  count, the duplicate/lowest-non-null rule, stable paging across equal values, the fallback
+  tiebreaker (asserted on the generated SQL — a tie is broken by whatever order the engine happens to
+  return, so paging real rows would pass either way), the index existing after migration, both fallbacks
+  (unknown id, and an unsortable type — an empty one, the only unknown `CustomFieldType.Value()` lets
+  through) asserted in **both** directions so a dropped direction cannot pass, the malformed-key
+  rejection, and the `"type":""` guard. `receiptsource_test.go` → `TestParseCustomFieldKey` covers the
+  parser directly, including the 2^32 boundary and the round trip against `CustomFieldKey`. The suite is **SQLite only**, so
+  the cross-engine NULL ordering is not covered there.
+
+### The first comment (`first_comment`)
+
+The desktop table's **Comment** column shows each receipt's first comment and sorts on it. The paged
+list only preloads `Comments` under `fullReceipts`, so the value rides a separate projection.
+
+- **"First" is `firstCommentOrder`** (`repositories/comments.go`): `created_at`, then `id` — comments
+  written in one insert share a timestamp. The sort and the display both use that one constant, so the
+  column can never sort by one comment while showing another. Replies cannot be created through the
+  API, so the list is flat and no `comment_id` filter is applied.
+- **`Receipt.FirstComment`** is a `*string` with `gorm:"-"` and `omitempty`: the handler fills it
+  after `MaskReceiptsForMemberVisibility`, through `PermissionService.LoadFirstVisibleComments`. That
+  is **one** `GetCommentsForReceiptIds` query per page, plus the per-group visibility the masker already
+  resolves. Every other endpoint leaves it nil, so the key is absent there, not `null`.
+- **`orderBy = first_comment`** (`constants.FIRST_COMMENT_ORDER_BY`) takes its own branch ahead of
+  `isTrustedValue`: `orderByFirstComment` is a correlated subquery, never a join (a receipt has many
+  comments, so a join would multiply rows and corrupt the count). It shares `orderBySubquery` with
+  the custom-field sort, which is where the literal direction keyword and the `receipts.id DESC`
+  tiebreaker live. The tiebreaker matters here too, because most receipts have no comment at all.
+- **No new permission.** Reading a receipt already means reading its comments on every other
+  surface, so the list's `group.receipts.read` gate covers this.
+- **Member isolation applies to both halves.** A comment by an author the caller can't see in that
+  receipt's group is dropped from every response, so it must not be shown **or sorted on**. A sort
+  on hidden text would order the table by comments the caller never sees, and would leak them one
+  comparison at a time. `GetPagedReceiptsByGroupId` therefore takes a sixth argument, a
+  `CommentAuthorVisibilityResolver`. The handler and the CSV export pass
+  `PermissionService.CommentAuthorVisibilityResolver`; the export passes it because it honours the
+  table's sort. Internal callers pass `nil`, the same contract as the paid-by resolver.
+  `commentAuthorVisibility` builds a per-group disjunction on `receipts.group_id`, mirroring
+  `applyActivityVisibilityDisjunction`, so an All-group page judges each receipt by its own group's
+  rules. It adds **no predicate at all** when no group restricts the caller, which covers every
+  non-isolated install. An authorless comment stays visible, as it does in `filterComments`.
+- **`idx_comment_receipt_id`** on `Comment.ReceiptId` serves both the subquery and the loader. It is
+  a model tag only; there was no index on that column before.
+- NULL (no comment) ordering and text collation are engine-dependent. That matches `name`,
+  `resolved_date` and the custom-field sorts, and is deliberately not normalised.
+- **Tests**:
+  - `repositories/receipt_first_comment_sort_test.go`: both directions; the earliest comment beating
+    a later one that sorts lower; the id tiebreak; hidden authors skipped, with an unrestricted
+    contrast; the All-group per-group rule; the SQL shape; no predicate when unrestricted; the index.
+  - `services/first_comment_test.go`: the earliest pick, hidden and authorless authors, and the
+    resolver.
+  - `handlers/receipt_first_comment_test.go`: the key is present or absent on the wire, the sort
+    works through the handler, and an isolated member never receives a peer's text, neither as the
+    value nor through the sort order. That last test was checked to fail when the handler passes a
+    `nil` resolver.
 
 ## Reporting Engine (`internal/reporting`)
 
@@ -833,7 +2717,49 @@ association resolves to no value, which surfaces as a `(None)` bucket — not an
 calendar period, `receiptsource` also offers derived **string** fields `<base>_day` / `_month` /
 `_year` (e.g. `date_month`, `created_at_year`, `resolved_date_day`) — zero-padded ISO in **UTC**, so
 they sort chronologically as plain text. A report groups by one of these instead of the raw date field;
-a nil `resolved_date` emits none of its period fields (→ `(None)`).
+a nil `resolved_date` emits none of its period fields (→ `(None)`). A **date custom field** gets the
+same treatment: `CustomFieldPeriodKeys(id)` yields `custom_<id>_day` / `_month` / `_year`, labelled off
+the field's own name (`"Due Date (Month)"`) through the shared `dateFieldRefs` / `setDateParts` helpers.
+They cannot collide with another field's key — `CustomFieldKey` is always `custom_` plus digits alone —
+and only a `models.DATE` field derives them. When duplicate values force the lowest-id-wins tie-break,
+the period parts are rewritten with the winner, so they always describe the value that survived.
+
+**Every field can cut; only numeric fields can be measured.** `Role` (`field.go`) bounds *measuring*
+only — `compileGroupBy` / `compileDetail` accept any field in the catalog, so a **currency custom field
+is both groupable and summable** (and a plain label column always accepted any field). Grouping by a
+number is well defined: bucket keys are canonical for decimals and `compareValues` orders them, so
+`15.60` and `15.6` share one bucket. `ErrGroupByNotDimension` / `ErrDetailByNotDimension` are **gone** —
+a spec that used to be rejected for grouping by a measure now compiles. Tests that needed an
+*invalid* spec use an unknown field key (`ErrUnknownField`) instead; don't reintroduce "group by
+amount" as the invalid-spec fixture.
+
+**Typed dimension and label rendering.** The engine emits raw typed values, so a renderer needs the
+field's type to present them: without it a bool prints `true`, a date an RFC 3339 instant, and money a
+bare decimal. `render.Dimension` therefore carries a `DataType` (populated by `buildDimensions` from the
+catalog), and `render/value.go`'s shared `formatLabelValue` is used by **every** label-ish cell —
+`formatDimension` (the CSV walk *and* `walk.go`, so HTML/PDF and XLSX too) and `joinLabel` (XLSX) —
+mapping bool → `Yes`/`No`, date → `2006-01-02` **UTC** (matching the derived `_day` field), currency →
+`Meta.Currency`'s format (bare 2dp when unset). A declared type that disagrees with a value's payload
+falls through to the value's own rendering rather than substituting a zero. A label column is still a
+**string** cell in XLSX even when it holds money — it names a bucket rather than measuring one, and a
+multi-value label has no numeric reading; aggregate columns are what carry native numbers. Note this
+changed existing reports that group by the built-in `date` / `resolved_date` / `created_at`: their
+bucket text went from RFC 3339 to a plain calendar day.
+
+**Grouping-level column headings are overridable.** Because a grouping level renders as a *leading
+column*, the request may name that column itself: `ReportRequestCommand.GroupByLabels`
+(`map[string]string`, `omitempty`) overrides `render.Dimension.Label` per grouping field key, resolved
+in `buildDimensions` (`services/report_service.go`). It is **keyed by field key rather than
+index-aligned** with `GroupBy` — grouping keys are unique (`reporting.ErrDuplicateGroupBy`), so
+reordering the levels can't desynchronize it. A key that is absent, blank after trimming, or names no
+grouping level falls back to the catalog label; a stale entry is ignored rather than failing an
+otherwise valid report, so there is **no validation** for it (matching the unvalidated
+`ReportColumn.Label`). Only the heading changes — `DataType` is untouched, so buckets still format by
+type. It is purely additive and optional, so stored templates deserialize unchanged and
+`CurrentReportConfigurationVersion` stays `1`. The user-supplied text is already covered by the two
+escaping paths every column label goes through: `html/template` for HTML/PDF and `SanitizeCSVField` in
+`dimensionHeading` for CSV. Nothing in `internal/reporting/` is involved — this is a renderer concern.
+The desktop drives it from the pencil on each Grouping row (see `desktop/CLAUDE.md` → "Reports").
 
 **`services.ReportDataService`** (`internal/services/report_data.go`) is the first DB-backed caller of
 the engine — it follows the `pie_chart.go` pattern. `Rows(userId, groupId, filter)` fetches the group's
@@ -899,6 +2825,81 @@ handler maps to a 400. The request contract mirrors the engine (columns carry a 
 formulas reference by name with ASCII operators; group-by/detail carry engine field keys), so the Angular
 client maps its builder UI onto engine-shaped values before submitting. Report generation is **synchronous**
 (streamed download); an async job + live progress + stored-results download is a possible later slice.
+
+**The period's date field (`ReportPeriod.dateField`).** A period covers one receipt date: `date`,
+`resolvedDate` or `createdAt`. These are the `ReceiptPagedRequestFilter` JSON keys, and the same fields,
+in the same order, as the receipts table's quick date filter, whose list drives the Report Builder's
+picker.
+- **Mapping and validation both live in `commands`.** `ReceiptDateFilterKeys()` pins the list and
+  `(*ReceiptPagedRequestFilter).DateFilterField(key)` returns the matching slot.
+  `validatePeriod` accepts a key only if `DateFilterField` resolves it, so the two cannot disagree. A
+  bad value is a 400 under the `period` key, reported after the preset checks.
+- **`applyPeriod` writes the BETWEEN onto that one slot**, overwriting whatever condition it held.
+  The preamble, `Meta.Params["Period"]` and `{{period}}` are unchanged.
+  - An unknown value falls back to `Date`. `GenerateReportFromTemplate` and the dashboard render path
+    run a stored configuration without re-validating it, so the fallback stays lenient, like
+    `resolvePeriodBounds`' default.
+  - Only the chosen slot is overwritten, so a builder **Date** filter now ANDs with a period on
+    another field. On `date` it is still replaced, as before.
+  - A nil `resolved_date` never matches, so a Resolved Date period excludes every unresolved receipt,
+    DECLINED included.
+- **Empty means `date`** (`ReportPeriod.DateFilterKey()`). That is how templates saved before the field
+  existed keep their meaning: no migration, and `CurrentReportConfigurationVersion` stays 1. The Go
+  field is `json:"dateField,omitempty"`. Templates are stored with `json.Marshal`, and the tag keeps an
+  empty value out of the blob instead of storing `""`.
+- **It is a plain `type: string` in swagger, deliberately not an enum.** `ReportPeriod` rides inside
+  `ReportTemplate.configuration`, a response the mobile client deserializes. A closed dart-dio enum
+  would throw on the first date key added later and fail the whole template payload on every
+  already-released build. `TestReportPeriodDateFieldIsAnOpenStringOnTheContract` parses `swagger.yml`
+  to hold that.
+- **Adding a date key** means `ReceiptDateFilterKeys()`, `DateFilterField`, the swagger description,
+  and desktop's `RECEIPT_DATE_FILTER_FIELDS`. `TestReceiptDateFilterKeys` pins the list, and
+  `TestReceiptDateFilterKeysAreFilterJsonKeys` checks it against the struct by reflection.
+- **The drill-in list is server-side: `POST /api/report/receipts` (`ReportService.Receipts`).** The
+  builder's "N receipts" chip opens a list of what the report covers.
+  - **Why the server builds it.** The list used to build its own period BETWEEN in the browser, and
+    disagreed with the count in three ways:
+    - it used the browser's time zone, not the server clock's;
+    - on SQLite, its ISO `…T…` bounds compared as text against the stored `YYYY-MM-DD HH:MM:SS…`,
+      dropping first-day receipts;
+    - it sent the "report generator" paid-by sentinel (`-1`) as-is, which matches nothing.
+  - **How it stays in step with the report.** Both start from `prepareReportFilter` (the paid-by
+    sentinel plus `applyPeriod`) and fetch through `ReportDataService.fetchReceipts`, so the list and
+    the count are the same query. They differ only in presentation:
+    - `Rows` marks hidden categories/tags `(Restricted)`;
+    - `Receipts` strips them, masks for member visibility, and preloads
+      `CUSTOM_FIELD_ASSOCIATIONS`, like the receipts list.
+  - **Gating.** It is gated exactly like `PreviewReport`: `app.reports.read`/`readAll` plus
+    `group.reports.read` in every group. It is **not** `group.receipts.read`, so a report reader sees
+    the receipts their report already covers.
+  - **Ordering and the cap.** The list is merged newest-first across groups and capped at
+    `reportReceiptsCap`.
+    - **The cap is 100** because it is the repository's page-size ceiling: `BaseRepository.Paginate`
+      clamps any larger page.
+    - **Each group fetches only its newest 100** as one page, which always contains the newest 100
+      overall.
+    - **`totalCount` is the sum of the groups' repository counts.** Those are taken after the grant
+      intersection and the paid-by WHERE, so it is the true total, not the loaded length. The desktop
+      shows a "Showing the newest N of M" notice when the two differ.
+- **Tests:**
+  - `commands/report_request_command_test.go` and `paged_request_command_test.go`: validation,
+    marshalling, and the sync guards above.
+  - `services/report_period_date_field_test.go`: DB-backed.
+    - One receipt per field, with inclusive bounds, presets, and the AND with a Date filter.
+    - For the drill-in:
+      - parity with the report on every field;
+      - a server in America/Los_Angeles at the May 31/June 1 boundary;
+      - the `-1` sentinel;
+      - custom-field definitions;
+      - merge order;
+      - the cap across two groups, which keeps the newest overall and the full total;
+      - a limited fetch whose count still excludes hidden payers.
+  - `handlers/report_period_date_field_test.go`:
+    - preview and template CRUD;
+    - the unvalidated render/generate-from-template paths, with a May case proving the fallback lands
+      on the receipt date and not the resolved one;
+    - `GetReportReceipts`, per field and for its gate.
+  - `repositories/report_template_test.go`: the stored blob.
 
 **`POST /api/report/preview`** drives the desktop builder's live preview. It shares GenerateReport's
 front-loaded parse/validate and the same per-group `group.reports.read` gate (the shared

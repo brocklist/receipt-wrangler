@@ -7,6 +7,7 @@ import (
 	"receipt-wrangler/api/internal/models"
 	"receipt-wrangler/api/internal/permissions"
 	"receipt-wrangler/api/internal/repositories"
+	"receipt-wrangler/api/internal/services"
 	"receipt-wrangler/api/internal/structs"
 	"receipt-wrangler/api/internal/utils"
 
@@ -42,7 +43,16 @@ func AddComment(w http.ResponseWriter, r *http.Request) {
 		HandlerFunction: func(w http.ResponseWriter, r *http.Request) (int, error) {
 			commentRepository := repositories.NewCommentRepository(nil)
 
-			comment, err := commentRepository.AddComment(upsertCommentCommand)
+			// Member isolation: a recipient who may not see the comment author IN THE
+			// RECEIPT'S GROUP must not receive an author-revealing notification.
+			// Resolve visibility per group from the recipient's side; unrestricted
+			// recipients always receive.
+			permissionService := services.NewPermissionService(nil)
+			authorVisibleTo := func(authorId uint, recipientId uint, groupId uint) (bool, error) {
+				return permissionService.UserVisibleInGroup(recipientId, authorId, groupId)
+			}
+
+			comment, err := commentRepository.AddComment(upsertCommentCommand, authorVisibleTo)
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}
@@ -87,7 +97,15 @@ func DeleteComment(w http.ResponseWriter, r *http.Request) {
 			commentRepository := repositories.NewCommentRepository(nil)
 			token := structs.GetClaims(r)
 
-			err := commentRepository.DeleteComment(commentId, token.UserId)
+			allowed, err := enforceCommentDeleteKeepsRequired(w, token.UserId, comment.ReceiptId, commentId)
+			if err != nil {
+				return http.StatusInternalServerError, err
+			}
+			if !allowed {
+				return 0, nil
+			}
+
+			err = commentRepository.DeleteComment(commentId, token.UserId)
 			if err != nil {
 				return http.StatusInternalServerError, err
 			}

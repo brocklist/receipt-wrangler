@@ -42,6 +42,8 @@ const Permission _$appPeriodCustomFieldsPeriodCreate =
     const Permission._('appPeriodCustomFieldsPeriodCreate');
 const Permission _$appPeriodCustomFieldsPeriodRead =
     const Permission._('appPeriodCustomFieldsPeriodRead');
+const Permission _$appPeriodCustomFieldsPeriodUpdate =
+    const Permission._('appPeriodCustomFieldsPeriodUpdate');
 const Permission _$appPeriodCustomFieldsPeriodDelete =
     const Permission._('appPeriodCustomFieldsPeriodDelete');
 const Permission _$appPeriodSystemSettingsPeriodRead =
@@ -76,6 +78,8 @@ const Permission _$appPeriodGroupsPeriodRead =
     const Permission._('appPeriodGroupsPeriodRead');
 const Permission _$appPeriodGroupsPeriodUpdateSettings =
     const Permission._('appPeriodGroupsPeriodUpdateSettings');
+const Permission _$appPeriodGroupsPeriodDelete =
+    const Permission._('appPeriodGroupsPeriodDelete');
 const Permission _$appPeriodApiKeysPeriodCreate =
     const Permission._('appPeriodApiKeysPeriodCreate');
 const Permission _$appPeriodApiKeysPeriodRead =
@@ -145,6 +149,8 @@ const Permission _$groupPeriodMembersPeriodUpdate =
     const Permission._('groupPeriodMembersPeriodUpdate');
 const Permission _$groupPeriodMembersPeriodDelete =
     const Permission._('groupPeriodMembersPeriodDelete');
+const Permission _$groupPeriodMembersPeriodGrantsPeriodUpdate =
+    const Permission._('groupPeriodMembersPeriodGrantsPeriodUpdate');
 const Permission _$groupPeriodReceiptsPeriodCreate =
     const Permission._('groupPeriodReceiptsPeriodCreate');
 const Permission _$groupPeriodReceiptsPeriodRead =
@@ -220,6 +226,8 @@ Permission _$valueOf(String name) {
       return _$appPeriodCustomFieldsPeriodCreate;
     case 'appPeriodCustomFieldsPeriodRead':
       return _$appPeriodCustomFieldsPeriodRead;
+    case 'appPeriodCustomFieldsPeriodUpdate':
+      return _$appPeriodCustomFieldsPeriodUpdate;
     case 'appPeriodCustomFieldsPeriodDelete':
       return _$appPeriodCustomFieldsPeriodDelete;
     case 'appPeriodSystemSettingsPeriodRead':
@@ -254,6 +262,8 @@ Permission _$valueOf(String name) {
       return _$appPeriodGroupsPeriodRead;
     case 'appPeriodGroupsPeriodUpdateSettings':
       return _$appPeriodGroupsPeriodUpdateSettings;
+    case 'appPeriodGroupsPeriodDelete':
+      return _$appPeriodGroupsPeriodDelete;
     case 'appPeriodApiKeysPeriodCreate':
       return _$appPeriodApiKeysPeriodCreate;
     case 'appPeriodApiKeysPeriodRead':
@@ -326,6 +336,8 @@ Permission _$valueOf(String name) {
       return _$groupPeriodMembersPeriodUpdate;
     case 'groupPeriodMembersPeriodDelete':
       return _$groupPeriodMembersPeriodDelete;
+    case 'groupPeriodMembersPeriodGrantsPeriodUpdate':
+      return _$groupPeriodMembersPeriodGrantsPeriodUpdate;
     case 'groupPeriodReceiptsPeriodCreate':
       return _$groupPeriodReceiptsPeriodCreate;
     case 'groupPeriodReceiptsPeriodRead':
@@ -386,6 +398,7 @@ final BuiltSet<Permission> _$values = BuiltSet<Permission>(const <Permission>[
   _$appPeriodTagsPeriodDelete,
   _$appPeriodCustomFieldsPeriodCreate,
   _$appPeriodCustomFieldsPeriodRead,
+  _$appPeriodCustomFieldsPeriodUpdate,
   _$appPeriodCustomFieldsPeriodDelete,
   _$appPeriodSystemSettingsPeriodRead,
   _$appPeriodSystemSettingsPeriodUpdate,
@@ -403,6 +416,7 @@ final BuiltSet<Permission> _$values = BuiltSet<Permission>(const <Permission>[
   _$appPeriodGroupsPeriodCreate,
   _$appPeriodGroupsPeriodRead,
   _$appPeriodGroupsPeriodUpdateSettings,
+  _$appPeriodGroupsPeriodDelete,
   _$appPeriodApiKeysPeriodCreate,
   _$appPeriodApiKeysPeriodRead,
   _$appPeriodApiKeysPeriodReadAny,
@@ -439,6 +453,7 @@ final BuiltSet<Permission> _$values = BuiltSet<Permission>(const <Permission>[
   _$groupPeriodMembersPeriodCreate,
   _$groupPeriodMembersPeriodUpdate,
   _$groupPeriodMembersPeriodDelete,
+  _$groupPeriodMembersPeriodGrantsPeriodUpdate,
   _$groupPeriodReceiptsPeriodCreate,
   _$groupPeriodReceiptsPeriodRead,
   _$groupPeriodReceiptsPeriodUpdate,
@@ -485,6 +500,8 @@ class _$PermissionMeta {
       _$appPeriodCustomFieldsPeriodCreate;
   Permission get appPeriodCustomFieldsPeriodRead =>
       _$appPeriodCustomFieldsPeriodRead;
+  Permission get appPeriodCustomFieldsPeriodUpdate =>
+      _$appPeriodCustomFieldsPeriodUpdate;
   Permission get appPeriodCustomFieldsPeriodDelete =>
       _$appPeriodCustomFieldsPeriodDelete;
   Permission get appPeriodSystemSettingsPeriodRead =>
@@ -516,6 +533,7 @@ class _$PermissionMeta {
   Permission get appPeriodGroupsPeriodRead => _$appPeriodGroupsPeriodRead;
   Permission get appPeriodGroupsPeriodUpdateSettings =>
       _$appPeriodGroupsPeriodUpdateSettings;
+  Permission get appPeriodGroupsPeriodDelete => _$appPeriodGroupsPeriodDelete;
   Permission get appPeriodApiKeysPeriodCreate => _$appPeriodApiKeysPeriodCreate;
   Permission get appPeriodApiKeysPeriodRead => _$appPeriodApiKeysPeriodRead;
   Permission get appPeriodApiKeysPeriodReadAny =>
@@ -570,6 +588,8 @@ class _$PermissionMeta {
       _$groupPeriodMembersPeriodUpdate;
   Permission get groupPeriodMembersPeriodDelete =>
       _$groupPeriodMembersPeriodDelete;
+  Permission get groupPeriodMembersPeriodGrantsPeriodUpdate =>
+      _$groupPeriodMembersPeriodGrantsPeriodUpdate;
   Permission get groupPeriodReceiptsPeriodCreate =>
       _$groupPeriodReceiptsPeriodCreate;
   Permission get groupPeriodReceiptsPeriodRead =>
@@ -634,6 +654,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'appPeriodTagsPeriodDelete': 'app.tags.delete',
     'appPeriodCustomFieldsPeriodCreate': 'app.custom-fields.create',
     'appPeriodCustomFieldsPeriodRead': 'app.custom-fields.read',
+    'appPeriodCustomFieldsPeriodUpdate': 'app.custom-fields.update',
     'appPeriodCustomFieldsPeriodDelete': 'app.custom-fields.delete',
     'appPeriodSystemSettingsPeriodRead': 'app.system-settings.read',
     'appPeriodSystemSettingsPeriodUpdate': 'app.system-settings.update',
@@ -656,6 +677,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'appPeriodGroupsPeriodCreate': 'app.groups.create',
     'appPeriodGroupsPeriodRead': 'app.groups.read',
     'appPeriodGroupsPeriodUpdateSettings': 'app.groups.update-settings',
+    'appPeriodGroupsPeriodDelete': 'app.groups.delete',
     'appPeriodApiKeysPeriodCreate': 'app.api-keys.create',
     'appPeriodApiKeysPeriodRead': 'app.api-keys.read',
     'appPeriodApiKeysPeriodReadAny': 'app.api-keys.read-any',
@@ -692,6 +714,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'groupPeriodMembersPeriodCreate': 'group.members.create',
     'groupPeriodMembersPeriodUpdate': 'group.members.update',
     'groupPeriodMembersPeriodDelete': 'group.members.delete',
+    'groupPeriodMembersPeriodGrantsPeriodUpdate': 'group.members.grants.update',
     'groupPeriodReceiptsPeriodCreate': 'group.receipts.create',
     'groupPeriodReceiptsPeriodRead': 'group.receipts.read',
     'groupPeriodReceiptsPeriodUpdate': 'group.receipts.update',
@@ -730,6 +753,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'app.tags.delete': 'appPeriodTagsPeriodDelete',
     'app.custom-fields.create': 'appPeriodCustomFieldsPeriodCreate',
     'app.custom-fields.read': 'appPeriodCustomFieldsPeriodRead',
+    'app.custom-fields.update': 'appPeriodCustomFieldsPeriodUpdate',
     'app.custom-fields.delete': 'appPeriodCustomFieldsPeriodDelete',
     'app.system-settings.read': 'appPeriodSystemSettingsPeriodRead',
     'app.system-settings.update': 'appPeriodSystemSettingsPeriodUpdate',
@@ -752,6 +776,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'app.groups.create': 'appPeriodGroupsPeriodCreate',
     'app.groups.read': 'appPeriodGroupsPeriodRead',
     'app.groups.update-settings': 'appPeriodGroupsPeriodUpdateSettings',
+    'app.groups.delete': 'appPeriodGroupsPeriodDelete',
     'app.api-keys.create': 'appPeriodApiKeysPeriodCreate',
     'app.api-keys.read': 'appPeriodApiKeysPeriodRead',
     'app.api-keys.read-any': 'appPeriodApiKeysPeriodReadAny',
@@ -788,6 +813,7 @@ class _$PermissionSerializer implements PrimitiveSerializer<Permission> {
     'group.members.create': 'groupPeriodMembersPeriodCreate',
     'group.members.update': 'groupPeriodMembersPeriodUpdate',
     'group.members.delete': 'groupPeriodMembersPeriodDelete',
+    'group.members.grants.update': 'groupPeriodMembersPeriodGrantsPeriodUpdate',
     'group.receipts.create': 'groupPeriodReceiptsPeriodCreate',
     'group.receipts.read': 'groupPeriodReceiptsPeriodRead',
     'group.receipts.update': 'groupPeriodReceiptsPeriodUpdate',

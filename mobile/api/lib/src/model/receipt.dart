@@ -26,6 +26,7 @@ part 'receipt.g.dart';
 /// * [createdAt] 
 /// * [createdBy] 
 /// * [date] - Receipt date
+/// * [firstComment] - Text of the receipt's earliest comment the caller may see. Only populated by the paged receipt list (POST /receipt/group/{groupId}); absent when there is no such comment.
 /// * [groupId] - Group foreign key
 /// * [id] 
 /// * [imageFiles] - Files associated to receipt
@@ -65,6 +66,10 @@ abstract class Receipt implements Built<Receipt, ReceiptBuilder> {
   @BuiltValueField(wireName: r'date')
   String get date;
 
+  /// Text of the receipt's earliest comment the caller may see. Only populated by the paged receipt list (POST /receipt/group/{groupId}); absent when there is no such comment.
+  @BuiltValueField(wireName: r'firstComment')
+  String? get firstComment;
+
   /// Group foreign key
   @BuiltValueField(wireName: r'groupId')
   int get groupId;
@@ -94,7 +99,7 @@ abstract class Receipt implements Built<Receipt, ReceiptBuilder> {
 
   @BuiltValueField(wireName: r'status')
   ReceiptStatus get status;
-  // enum statusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  ,  };
+  // enum statusEnum {  OPEN,  NEEDS_ATTENTION,  RESOLVED,  DRAFT,  DECLINED,  ,  };
 
   /// Tags associated to receipt
   @BuiltValueField(wireName: r'tags')
@@ -169,6 +174,13 @@ class _$ReceiptSerializer implements PrimitiveSerializer<Receipt> {
       object.date,
       specifiedType: const FullType(String),
     );
+    if (object.firstComment != null) {
+      yield r'firstComment';
+      yield serializers.serialize(
+        object.firstComment,
+        specifiedType: const FullType(String),
+      );
+    }
     yield r'groupId';
     yield serializers.serialize(
       object.groupId,
@@ -303,6 +315,13 @@ class _$ReceiptSerializer implements PrimitiveSerializer<Receipt> {
             specifiedType: const FullType(String),
           ) as String;
           result.date = valueDes;
+          break;
+        case r'firstComment':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.firstComment = valueDes;
           break;
         case r'groupId':
           final valueDes = serializers.deserialize(

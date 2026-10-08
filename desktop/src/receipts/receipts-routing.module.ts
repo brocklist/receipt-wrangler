@@ -20,6 +20,11 @@ const routes: Routes = [
     path: "group/:groupId",
     component: ReceiptsTableComponent,
     canActivate: [GroupGuard],
+    resolve: {
+      // Powers the per-custom-field columns. Resolves to [] without
+      // app.custom-fields.read, which is what gates the feature.
+      customFields: customFieldResolverFn,
+    },
     data: {
       groupGuardBasePath: `/receipts/group`,
     },
@@ -33,6 +38,11 @@ const routes: Routes = [
     data: {
       mode: FormMode.add,
       groupPermission: Permission.GroupReceiptsCreate,
+      // Gate on the group the receipt would be created in, which is what the
+      // form seeds - not merely the group being browsed. Without this a member
+      // of exactly one group is bounced from /receipts/add whenever they are on
+      // the synthetic "All" group, which is where login lands them.
+      useAddTargetGroupId: true,
     },
     canActivate: [groupPermissionGuard],
   },

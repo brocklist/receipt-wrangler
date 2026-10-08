@@ -46,6 +46,22 @@ class _$UpdateGroupReceiptSettingsCommand
   final bool? quickScanTagsEnabled;
   @override
   final bool? quickScanTagsRequired;
+  @override
+  final bool? quickScanCommentEnabled;
+  @override
+  final bool? quickScanCommentRequired;
+  @override
+  final BuiltList<int>? defaultCustomFieldIds;
+  @override
+  final bool? applyDefaultCustomFieldsOnIngest;
+  @override
+  final bool? receiptSummaryEnabled;
+  @override
+  final BuiltList<int>? receiptSummaryCustomFieldIds;
+  @override
+  final BuiltList<ReceiptStatus>? receiptSummaryStatuses;
+  @override
+  final ReceiptSummaryPosition? receiptSummaryPosition;
 
   factory _$UpdateGroupReceiptSettingsCommand(
           [void Function(UpdateGroupReceiptSettingsCommandBuilder)? updates]) =>
@@ -70,7 +86,15 @@ class _$UpdateGroupReceiptSettingsCommand
       this.quickScanCategoriesEnabled,
       this.quickScanCategoriesRequired,
       this.quickScanTagsEnabled,
-      this.quickScanTagsRequired})
+      this.quickScanTagsRequired,
+      this.quickScanCommentEnabled,
+      this.quickScanCommentRequired,
+      this.defaultCustomFieldIds,
+      this.applyDefaultCustomFieldsOnIngest,
+      this.receiptSummaryEnabled,
+      this.receiptSummaryCustomFieldIds,
+      this.receiptSummaryStatuses,
+      this.receiptSummaryPosition})
       : super._();
   @override
   UpdateGroupReceiptSettingsCommand rebuild(
@@ -103,7 +127,16 @@ class _$UpdateGroupReceiptSettingsCommand
         quickScanCategoriesEnabled == other.quickScanCategoriesEnabled &&
         quickScanCategoriesRequired == other.quickScanCategoriesRequired &&
         quickScanTagsEnabled == other.quickScanTagsEnabled &&
-        quickScanTagsRequired == other.quickScanTagsRequired;
+        quickScanTagsRequired == other.quickScanTagsRequired &&
+        quickScanCommentEnabled == other.quickScanCommentEnabled &&
+        quickScanCommentRequired == other.quickScanCommentRequired &&
+        defaultCustomFieldIds == other.defaultCustomFieldIds &&
+        applyDefaultCustomFieldsOnIngest ==
+            other.applyDefaultCustomFieldsOnIngest &&
+        receiptSummaryEnabled == other.receiptSummaryEnabled &&
+        receiptSummaryCustomFieldIds == other.receiptSummaryCustomFieldIds &&
+        receiptSummaryStatuses == other.receiptSummaryStatuses &&
+        receiptSummaryPosition == other.receiptSummaryPosition;
   }
 
   @override
@@ -128,6 +161,14 @@ class _$UpdateGroupReceiptSettingsCommand
     _$hash = $jc(_$hash, quickScanCategoriesRequired.hashCode);
     _$hash = $jc(_$hash, quickScanTagsEnabled.hashCode);
     _$hash = $jc(_$hash, quickScanTagsRequired.hashCode);
+    _$hash = $jc(_$hash, quickScanCommentEnabled.hashCode);
+    _$hash = $jc(_$hash, quickScanCommentRequired.hashCode);
+    _$hash = $jc(_$hash, defaultCustomFieldIds.hashCode);
+    _$hash = $jc(_$hash, applyDefaultCustomFieldsOnIngest.hashCode);
+    _$hash = $jc(_$hash, receiptSummaryEnabled.hashCode);
+    _$hash = $jc(_$hash, receiptSummaryCustomFieldIds.hashCode);
+    _$hash = $jc(_$hash, receiptSummaryStatuses.hashCode);
+    _$hash = $jc(_$hash, receiptSummaryPosition.hashCode);
     _$hash = $jf(_$hash);
     return _$hash;
   }
@@ -153,7 +194,16 @@ class _$UpdateGroupReceiptSettingsCommand
           ..add('quickScanCategoriesEnabled', quickScanCategoriesEnabled)
           ..add('quickScanCategoriesRequired', quickScanCategoriesRequired)
           ..add('quickScanTagsEnabled', quickScanTagsEnabled)
-          ..add('quickScanTagsRequired', quickScanTagsRequired))
+          ..add('quickScanTagsRequired', quickScanTagsRequired)
+          ..add('quickScanCommentEnabled', quickScanCommentEnabled)
+          ..add('quickScanCommentRequired', quickScanCommentRequired)
+          ..add('defaultCustomFieldIds', defaultCustomFieldIds)
+          ..add('applyDefaultCustomFieldsOnIngest',
+              applyDefaultCustomFieldsOnIngest)
+          ..add('receiptSummaryEnabled', receiptSummaryEnabled)
+          ..add('receiptSummaryCustomFieldIds', receiptSummaryCustomFieldIds)
+          ..add('receiptSummaryStatuses', receiptSummaryStatuses)
+          ..add('receiptSummaryPosition', receiptSummaryPosition))
         .toString();
   }
 }
@@ -258,6 +308,55 @@ class UpdateGroupReceiptSettingsCommandBuilder
   set quickScanTagsRequired(bool? quickScanTagsRequired) =>
       _$this._quickScanTagsRequired = quickScanTagsRequired;
 
+  bool? _quickScanCommentEnabled;
+  bool? get quickScanCommentEnabled => _$this._quickScanCommentEnabled;
+  set quickScanCommentEnabled(bool? quickScanCommentEnabled) =>
+      _$this._quickScanCommentEnabled = quickScanCommentEnabled;
+
+  bool? _quickScanCommentRequired;
+  bool? get quickScanCommentRequired => _$this._quickScanCommentRequired;
+  set quickScanCommentRequired(bool? quickScanCommentRequired) =>
+      _$this._quickScanCommentRequired = quickScanCommentRequired;
+
+  ListBuilder<int>? _defaultCustomFieldIds;
+  ListBuilder<int> get defaultCustomFieldIds =>
+      _$this._defaultCustomFieldIds ??= ListBuilder<int>();
+  set defaultCustomFieldIds(ListBuilder<int>? defaultCustomFieldIds) =>
+      _$this._defaultCustomFieldIds = defaultCustomFieldIds;
+
+  bool? _applyDefaultCustomFieldsOnIngest;
+  bool? get applyDefaultCustomFieldsOnIngest =>
+      _$this._applyDefaultCustomFieldsOnIngest;
+  set applyDefaultCustomFieldsOnIngest(
+          bool? applyDefaultCustomFieldsOnIngest) =>
+      _$this._applyDefaultCustomFieldsOnIngest =
+          applyDefaultCustomFieldsOnIngest;
+
+  bool? _receiptSummaryEnabled;
+  bool? get receiptSummaryEnabled => _$this._receiptSummaryEnabled;
+  set receiptSummaryEnabled(bool? receiptSummaryEnabled) =>
+      _$this._receiptSummaryEnabled = receiptSummaryEnabled;
+
+  ListBuilder<int>? _receiptSummaryCustomFieldIds;
+  ListBuilder<int> get receiptSummaryCustomFieldIds =>
+      _$this._receiptSummaryCustomFieldIds ??= ListBuilder<int>();
+  set receiptSummaryCustomFieldIds(
+          ListBuilder<int>? receiptSummaryCustomFieldIds) =>
+      _$this._receiptSummaryCustomFieldIds = receiptSummaryCustomFieldIds;
+
+  ListBuilder<ReceiptStatus>? _receiptSummaryStatuses;
+  ListBuilder<ReceiptStatus> get receiptSummaryStatuses =>
+      _$this._receiptSummaryStatuses ??= ListBuilder<ReceiptStatus>();
+  set receiptSummaryStatuses(
+          ListBuilder<ReceiptStatus>? receiptSummaryStatuses) =>
+      _$this._receiptSummaryStatuses = receiptSummaryStatuses;
+
+  ReceiptSummaryPosition? _receiptSummaryPosition;
+  ReceiptSummaryPosition? get receiptSummaryPosition =>
+      _$this._receiptSummaryPosition;
+  set receiptSummaryPosition(ReceiptSummaryPosition? receiptSummaryPosition) =>
+      _$this._receiptSummaryPosition = receiptSummaryPosition;
+
   UpdateGroupReceiptSettingsCommandBuilder() {
     UpdateGroupReceiptSettingsCommand._defaults(this);
   }
@@ -284,6 +383,15 @@ class UpdateGroupReceiptSettingsCommandBuilder
       _quickScanCategoriesRequired = $v.quickScanCategoriesRequired;
       _quickScanTagsEnabled = $v.quickScanTagsEnabled;
       _quickScanTagsRequired = $v.quickScanTagsRequired;
+      _quickScanCommentEnabled = $v.quickScanCommentEnabled;
+      _quickScanCommentRequired = $v.quickScanCommentRequired;
+      _defaultCustomFieldIds = $v.defaultCustomFieldIds?.toBuilder();
+      _applyDefaultCustomFieldsOnIngest = $v.applyDefaultCustomFieldsOnIngest;
+      _receiptSummaryEnabled = $v.receiptSummaryEnabled;
+      _receiptSummaryCustomFieldIds =
+          $v.receiptSummaryCustomFieldIds?.toBuilder();
+      _receiptSummaryStatuses = $v.receiptSummaryStatuses?.toBuilder();
+      _receiptSummaryPosition = $v.receiptSummaryPosition;
       _$v = null;
     }
     return this;
@@ -304,28 +412,55 @@ class UpdateGroupReceiptSettingsCommandBuilder
   UpdateGroupReceiptSettingsCommand build() => _build();
 
   _$UpdateGroupReceiptSettingsCommand _build() {
-    final _$result = _$v ??
-        _$UpdateGroupReceiptSettingsCommand._(
-          hideImages: hideImages,
-          hideReceiptCategories: hideReceiptCategories,
-          hideReceiptTags: hideReceiptTags,
-          hideItemCategories: hideItemCategories,
-          hideItemTags: hideItemTags,
-          hideComments: hideComments,
-          hideShareCategories: hideShareCategories,
-          hideShareTags: hideShareTags,
-          quickScanPaidByEnabled: quickScanPaidByEnabled,
-          quickScanPaidByRequired: quickScanPaidByRequired,
-          quickScanDefaultPaidByType: quickScanDefaultPaidByType,
-          quickScanDefaultPaidById: quickScanDefaultPaidById,
-          quickScanStatusEnabled: quickScanStatusEnabled,
-          quickScanStatusRequired: quickScanStatusRequired,
-          quickScanDefaultStatus: quickScanDefaultStatus,
-          quickScanCategoriesEnabled: quickScanCategoriesEnabled,
-          quickScanCategoriesRequired: quickScanCategoriesRequired,
-          quickScanTagsEnabled: quickScanTagsEnabled,
-          quickScanTagsRequired: quickScanTagsRequired,
-        );
+    _$UpdateGroupReceiptSettingsCommand _$result;
+    try {
+      _$result = _$v ??
+          _$UpdateGroupReceiptSettingsCommand._(
+            hideImages: hideImages,
+            hideReceiptCategories: hideReceiptCategories,
+            hideReceiptTags: hideReceiptTags,
+            hideItemCategories: hideItemCategories,
+            hideItemTags: hideItemTags,
+            hideComments: hideComments,
+            hideShareCategories: hideShareCategories,
+            hideShareTags: hideShareTags,
+            quickScanPaidByEnabled: quickScanPaidByEnabled,
+            quickScanPaidByRequired: quickScanPaidByRequired,
+            quickScanDefaultPaidByType: quickScanDefaultPaidByType,
+            quickScanDefaultPaidById: quickScanDefaultPaidById,
+            quickScanStatusEnabled: quickScanStatusEnabled,
+            quickScanStatusRequired: quickScanStatusRequired,
+            quickScanDefaultStatus: quickScanDefaultStatus,
+            quickScanCategoriesEnabled: quickScanCategoriesEnabled,
+            quickScanCategoriesRequired: quickScanCategoriesRequired,
+            quickScanTagsEnabled: quickScanTagsEnabled,
+            quickScanTagsRequired: quickScanTagsRequired,
+            quickScanCommentEnabled: quickScanCommentEnabled,
+            quickScanCommentRequired: quickScanCommentRequired,
+            defaultCustomFieldIds: _defaultCustomFieldIds?.build(),
+            applyDefaultCustomFieldsOnIngest: applyDefaultCustomFieldsOnIngest,
+            receiptSummaryEnabled: receiptSummaryEnabled,
+            receiptSummaryCustomFieldIds:
+                _receiptSummaryCustomFieldIds?.build(),
+            receiptSummaryStatuses: _receiptSummaryStatuses?.build(),
+            receiptSummaryPosition: receiptSummaryPosition,
+          );
+    } catch (_) {
+      late String _$failedField;
+      try {
+        _$failedField = 'defaultCustomFieldIds';
+        _defaultCustomFieldIds?.build();
+
+        _$failedField = 'receiptSummaryCustomFieldIds';
+        _receiptSummaryCustomFieldIds?.build();
+        _$failedField = 'receiptSummaryStatuses';
+        _receiptSummaryStatuses?.build();
+      } catch (e) {
+        throw BuiltValueNestedFieldError(
+            r'UpdateGroupReceiptSettingsCommand', _$failedField, e.toString());
+      }
+      rethrow;
+    }
     replace(_$result);
     return _$result;
   }

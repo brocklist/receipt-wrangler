@@ -22,7 +22,7 @@ func NewRoleRepository(tx *gorm.DB) RoleRepository {
 	return repository
 }
 
-func (repository RoleRepository) CreateAppRole(name string, description string, perms []string) (models.AppRole, error) {
+func (repository RoleRepository) CreateAppRole(name string, description string, perms []string, skipDefaultGroupCreation bool) (models.AppRole, error) {
 	db := repository.GetDB()
 
 	rolePermissions := make([]models.AppRolePermission, 0, len(perms))
@@ -31,9 +31,10 @@ func (repository RoleRepository) CreateAppRole(name string, description string, 
 	}
 
 	role := models.AppRole{
-		Name:        name,
-		Description: description,
-		Permissions: rolePermissions,
+		Name:                     name,
+		Description:              description,
+		SkipDefaultGroupCreation: skipDefaultGroupCreation,
+		Permissions:              rolePermissions,
 	}
 
 	err := db.Create(&role).Error
@@ -44,7 +45,7 @@ func (repository RoleRepository) CreateAppRole(name string, description string, 
 	return role, nil
 }
 
-func (repository RoleRepository) CreateGroupRole(name string, description string, perms []string, categoryGrantIds []uint, tagGrantIds []uint, paidByUserGrantIds []uint, includeOwnPaidReceipts bool) (models.GroupRoleDefinition, error) {
+func (repository RoleRepository) CreateGroupRole(name string, description string, perms []string, categoryGrantIds []uint, tagGrantIds []uint, paidByUserGrantIds []uint, includeOwnPaidReceipts bool, seesAllMembers bool) (models.GroupRoleDefinition, error) {
 	db := repository.GetDB()
 
 	rolePermissions := make([]models.GroupRolePermission, 0, len(perms))
@@ -57,6 +58,7 @@ func (repository RoleRepository) CreateGroupRole(name string, description string
 		Description:                description,
 		IncludeOwnPaidReceipts:     includeOwnPaidReceipts,
 		PaidByVisibilityRestricted: includeOwnPaidReceipts || len(paidByUserGrantIds) > 0,
+		SeesAllMembers:             seesAllMembers,
 		Permissions:                rolePermissions,
 	}
 
@@ -102,7 +104,7 @@ func (repository RoleRepository) GetGroupRoleById(id uint) (models.GroupRoleDefi
 	return role, nil
 }
 
-func (repository RoleRepository) UpdateAppRole(id uint, name string, description string, perms []string) (models.AppRole, error) {
+func (repository RoleRepository) UpdateAppRole(id uint, name string, description string, perms []string, skipDefaultGroupCreation bool) (models.AppRole, error) {
 	db := repository.GetDB()
 
 	err := db.Where("app_role_id = ?", id).Delete(&models.AppRolePermission{}).Error
@@ -110,9 +112,12 @@ func (repository RoleRepository) UpdateAppRole(id uint, name string, description
 		return models.AppRole{}, err
 	}
 
+	// Use the map form so false bools persist (GORM's struct Updates skips
+	// zero-value bools, which would leave a toggled-off flag set).
 	err = db.Model(&models.AppRole{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"name":        name,
-		"description": description,
+		"name":                        name,
+		"description":                 description,
+		"skip_default_group_creation": skipDefaultGroupCreation,
 	}).Error
 	if err != nil {
 		return models.AppRole{}, err
@@ -133,7 +138,7 @@ func (repository RoleRepository) UpdateAppRole(id uint, name string, description
 	return repository.GetAppRoleById(id)
 }
 
-func (repository RoleRepository) UpdateGroupRole(id uint, name string, description string, perms []string, categoryGrantIds []uint, tagGrantIds []uint, paidByUserGrantIds []uint, includeOwnPaidReceipts bool) (models.GroupRoleDefinition, error) {
+func (repository RoleRepository) UpdateGroupRole(id uint, name string, description string, perms []string, categoryGrantIds []uint, tagGrantIds []uint, paidByUserGrantIds []uint, includeOwnPaidReceipts bool, seesAllMembers bool) (models.GroupRoleDefinition, error) {
 	db := repository.GetDB()
 
 	err := db.Where("group_role_id = ?", id).Delete(&models.GroupRolePermission{}).Error
@@ -148,6 +153,7 @@ func (repository RoleRepository) UpdateGroupRole(id uint, name string, descripti
 		"description":                   description,
 		"include_own_paid_receipts":     includeOwnPaidReceipts,
 		"paid_by_visibility_restricted": includeOwnPaidReceipts || len(paidByUserGrantIds) > 0,
+		"sees_all_members":              seesAllMembers,
 	}).Error
 	if err != nil {
 		return models.GroupRoleDefinition{}, err
@@ -313,18 +319,19 @@ func (repository RoleRepository) GetAllRoles() ([]structs.RoleView, error) {
 		}
 
 		roles = append(roles, structs.RoleView{
-			Id:               role.ID,
-			Name:             role.Name,
-			Description:      role.Description,
-			Scope:            permissions.ScopeApp,
-			IsDefault:        role.IsDefault,
-			IsSystem:         role.IsSystem,
-			Permissions:          perms,
-			AssignedCount:        appRoleCounts[role.ID],
-			CategoryGrants:       []uint{},
-			TagGrants:            []uint{},
-			PaidByUserGrants:     []uint{},
-			ReportTemplateGrants: []structs.ReportTemplateGrantView{},
+			Id:                       role.ID,
+			Name:                     role.Name,
+			Description:              role.Description,
+			Scope:                    permissions.ScopeApp,
+			IsDefault:                role.IsDefault,
+			IsSystem:                 role.IsSystem,
+			Permissions:              perms,
+			AssignedCount:            appRoleCounts[role.ID],
+			SkipDefaultGroupCreation: role.SkipDefaultGroupCreation,
+			CategoryGrants:           []uint{},
+			TagGrants:                []uint{},
+			PaidByUserGrants:         []uint{},
+			ReportTemplateGrants:     []structs.ReportTemplateGrantView{},
 		})
 	}
 
@@ -347,6 +354,9 @@ func (repository RoleRepository) GetAllRoles() ([]structs.RoleView, error) {
 			TagGrants:              tagGrantIdsFromRole(role),
 			PaidByUserGrants:       paidByUserGrantIdsFromRole(role),
 			IncludeOwnPaidReceipts: role.IncludeOwnPaidReceipts,
+			SeesAllMembers:         role.SeesAllMembers,
+			RequireReceiptComment:  role.RequireReceiptComment,
+			RequireReceiptImage:    role.RequireReceiptImage,
 			ReportTemplateGrants:   ReportTemplateGrantsFromRole(role),
 		})
 	}
@@ -642,6 +652,112 @@ func (repository RoleRepository) GetGroupRolePaidByConfig(groupRoleId uint) (inc
 	return role.IncludeOwnPaidReceipts, role.PaidByVisibilityRestricted, nil
 }
 
+// GetGroupRoleIndividualGrantConfig returns whether a group role requires
+// per-member category / tag assignment. When set, a member holding the role with
+// no membership grants of their own sees nothing at all rather than falling back
+// to the role's set — so forgetting to assign a new member fails closed.
+func (repository RoleRepository) GetGroupRoleIndividualGrantConfig(groupRoleId uint) (categories bool, tags bool, err error) {
+	db := repository.GetDB()
+
+	var role models.GroupRoleDefinition
+	err = db.Select("requires_individual_category_grants", "requires_individual_tag_grants").
+		Where("id = ?", groupRoleId).
+		First(&role).Error
+	if err != nil {
+		return false, false, err
+	}
+
+	return role.RequiresIndividualCategoryGrants, role.RequiresIndividualTagGrants, nil
+}
+
+// SetGroupRoleIndividualGrantConfig records whether a group role requires
+// per-member category / tag assignment.
+//
+// Kept a separate method from CreateGroupRole / UpdateGroupRole — whose positional
+// signatures already end in two bools — for the same reason
+// ReplaceGroupRoleReportTemplateGrants is separate: appending two more would make
+// four adjacent bools at every call site, which is trivially transposable and
+// silently wrong when it is. Uses the map form so a toggled-off false persists.
+func (repository RoleRepository) SetGroupRoleIndividualGrantConfig(groupRoleId uint, requiresCategories bool, requiresTags bool) error {
+	return repository.GetDB().Model(&models.GroupRoleDefinition{}).
+		Where("id = ?", groupRoleId).
+		Updates(map[string]interface{}{
+			"requires_individual_category_grants": requiresCategories,
+			"requires_individual_tag_grants":      requiresTags,
+		}).Error
+}
+
+// SetGroupRoleReceiptRequirements records whether a group role requires its
+// members to supply a comment / an image on the group's receipts.
+//
+// A separate method for the same reason as SetGroupRoleIndividualGrantConfig:
+// appending two more bools to CreateGroupRole / UpdateGroupRole would make their
+// trailing arguments trivially transposable. Uses the map form so a toggled-off
+// false persists.
+func (repository RoleRepository) SetGroupRoleReceiptRequirements(groupRoleId uint, requireComment bool, requireImage bool) error {
+	return repository.GetDB().Model(&models.GroupRoleDefinition{}).
+		Where("id = ?", groupRoleId).
+		Updates(map[string]interface{}{
+			"require_receipt_comment": requireComment,
+			"require_receipt_image":   requireImage,
+		}).Error
+}
+
+// MemberReceiptRequirementFlags are the RAW receipt-requirement flags of a
+// member's group role, before any per-group waiver is applied.
+type MemberReceiptRequirementFlags struct {
+	RequireComment bool
+	RequireImage   bool
+}
+
+// GetMemberReceiptRequirementFlags returns, keyed by group id, the receipt
+// requirement flags of the role userId holds in each of groupIds — in one query,
+// so AppData can resolve every group at once. Only groups whose role sets at
+// least one flag are present: a non-member, a membership with no role, and the
+// synthetic "All" group (a cross-group view that owns no receipts) are all absent,
+// which callers read as "nothing required".
+func (repository RoleRepository) GetMemberReceiptRequirementFlags(userId uint, groupIds []uint) (map[uint]MemberReceiptRequirementFlags, error) {
+	result := make(map[uint]MemberReceiptRequirementFlags)
+	if len(groupIds) == 0 {
+		return result, nil
+	}
+
+	type flagRow struct {
+		GroupID               uint
+		IsAllGroup            *bool
+		RequireReceiptComment bool
+		RequireReceiptImage   bool
+	}
+	var rows []flagRow
+
+	err := repository.GetDB().Table("group_members AS gm").
+		Select("gm.group_id AS group_id, g.is_all_group AS is_all_group, grd.require_receipt_comment AS require_receipt_comment, grd.require_receipt_image AS require_receipt_image").
+		Joins("JOIN group_role_definitions AS grd ON grd.id = gm.group_role_id").
+		Joins("JOIN groups AS g ON g.id = gm.group_id").
+		Where("gm.user_id = ? AND gm.group_id IN ?", userId, groupIds).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for _, row := range rows {
+		// is_all_group is nullable (no NOT NULL on the column), so it is scanned
+		// as a pointer and filtered here rather than in SQL.
+		if row.IsAllGroup != nil && *row.IsAllGroup {
+			continue
+		}
+		if !row.RequireReceiptComment && !row.RequireReceiptImage {
+			continue
+		}
+		result[row.GroupID] = MemberReceiptRequirementFlags{
+			RequireComment: row.RequireReceiptComment,
+			RequireImage:   row.RequireReceiptImage,
+		}
+	}
+
+	return result, nil
+}
+
 // GetGroupRoleReportTemplateGrants returns a group role's report-template grant
 // rows (one per template+action). An empty result means the role is unrestricted
 // (act on every template its group access reaches) unless
@@ -678,6 +794,23 @@ func (repository RoleRepository) GetGroupRoleReportTemplateGrantsRestricted(grou
 
 // GetUserAppRoleId returns the app role id assigned to a user, or nil when the
 // user has no app role. Returns gorm.ErrRecordNotFound if the user is missing.
+// AppRoleSkipsDefaultGroup reports whether users created with this app role skip
+// the personal "My Receipts" group. Reads the single column so user creation does
+// not preload the role's whole permission set.
+func (repository RoleRepository) AppRoleSkipsDefaultGroup(id uint) (bool, error) {
+	db := repository.GetDB()
+
+	var role models.AppRole
+	err := db.Select("skip_default_group_creation").
+		Where("id = ?", id).
+		First(&role).Error
+	if err != nil {
+		return false, err
+	}
+
+	return role.SkipDefaultGroupCreation, nil
+}
+
 func (repository RoleRepository) GetUserAppRoleId(userId uint) (*uint, error) {
 	db := repository.GetDB()
 

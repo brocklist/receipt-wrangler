@@ -9,63 +9,43 @@ import (
 	"receipt-wrangler/api/internal/structs"
 )
 
-func SetActivityCanBeRestarted(activities *[]structs.Activity, userId uint) error {
+// SetActivityFlagsForUser preserves source-file recovery and additionally checks
+// the current caller's permissions for durable recognition retries.
+func SetActivityFlagsForUser(activities *[]structs.Activity, userId uint) error {
+	if len(*activities) == 0 {
+		return nil
+	}
 	inspector, err := GetAsynqInspector()
 	if err != nil {
-		return err
+		return nil
 	}
 	defer inspector.Close()
-
-	rerunableArchivedTasks, err := inspector.ListArchivedTasks(string(models.QuickScanQueue))
-	if err != nil {
-		// We do not return this error because it will happen on a fresh redis instance, with no quick scans ever ran
-		return nil
-	}
-
-	archivedEmailProcessingTasks, err := inspector.ListArchivedTasks(string(models.EmailReceiptProcessingQueue))
-	if err != nil {
-		// We do not return this error because it will happen on a fresh redis instance, with no email processing ever ran
-		return nil
-	}
-	rerunableArchivedTasks = append(rerunableArchivedTasks, archivedEmailProcessingTasks...)
-
-	systemTaskRepository := repositories.NewSystemTaskRepository(nil)
-
+	lookup := memoizeTaskInfoLookup(inspector.GetTaskInfo)
+	applyActivityFlags(activities, lookup)
 	for i := range *activities {
 		activity := &(*activities)[i]
-
-		if activity.Type == models.QUICK_SCAN || activity.Type == models.EMAIL_UPLOAD {
-			systemTask, err := systemTaskRepository.GetSystemTaskById(activity.Id)
-			if err != nil {
-				return err
-			}
-
-			for i := 0; i < len(rerunableArchivedTasks); i++ {
-				task := rerunableArchivedTasks[i]
-				if task.ID == systemTask.AsynqTaskId {
-					var payload models.RecognitionTaskPayload
-					if json.Unmarshal(task.Payload, &payload) == nil && payload.RecognitionTaskId > 0 {
-						record, err := repositories.NewRecognitionTaskRepository(nil).Get(payload.RecognitionTaskId)
-						if err != nil {
-							return err
-						}
-						// The handler also rechecks the acting user's permissions.
-						if record.Status != models.RecognitionFailed || record.Generation != payload.Generation {
-							break
-						}
-						if err = services.NewRecognitionTaskService().Flags(userId, &record); err != nil {
-							return err
-						}
-						activity.CanBeRestarted = record.CanRetry
-						break
-					}
-					activity.CanBeRestarted = true
-					break
-				}
-			}
+		if activity.Type != models.QUICK_SCAN || !activity.CanBeRestarted {
+			continue
 		}
+		info, err := lookup(string(models.QuickScanQueue), activity.AsynqTaskId)
+		if err != nil || info == nil {
+			activity.CanBeRestarted = false
+			continue
+		}
+		var payload models.RecognitionTaskPayload
+		if json.Unmarshal(info.Payload, &payload) != nil || payload.RecognitionTaskId == 0 {
+			continue
+		}
+		record, err := repositories.NewRecognitionTaskRepository(nil).Get(payload.RecognitionTaskId)
+		if err != nil || record.Generation != payload.Generation || record.Status != models.RecognitionFailed {
+			activity.CanBeRestarted = false
+			continue
+		}
+		if err = services.NewRecognitionTaskService().Flags(userId, &record); err != nil {
+			return err
+		}
+		activity.CanBeRestarted = record.CanRetry
 	}
-
 	return nil
 }
 

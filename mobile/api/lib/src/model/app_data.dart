@@ -5,8 +5,8 @@
 // ignore_for_file: unused_element
 import 'package:openapi/src/model/tag.dart';
 import 'package:openapi/src/model/currency_separator.dart';
-import 'package:openapi/src/model/permission.dart';
 import 'package:openapi/src/model/group.dart';
+import 'package:openapi/src/model/receipt_requirements.dart';
 import 'package:openapi/src/model/feature_config.dart';
 import 'package:openapi/src/model/claims.dart';
 import 'package:openapi/src/model/user_preferences.dart';
@@ -40,8 +40,9 @@ part 'app_data.g.dart';
 /// * [currencySymbolPosition] 
 /// * [currencyHideDecimalPlaces] - Whether to hide decimal places
 /// * [icons] - Icons in the system
-/// * [appPermissions] - The calling user's effective app-level permissions.
-/// * [groupPermissions] - The calling user's effective group-level permissions, keyed by group id.
+/// * [appPermissions] - The calling user's effective app-level permissions. Deliberately typed as plain strings rather than the Permission enum: this is server-resolved data, not a contract. A granted entry may be a wildcard (e.g. \"app.*\"), which is not an enum member, and a client built before a newly added permission must still be able to parse the payload. Clients match these with the wildcard matcher.
+/// * [groupPermissions] - The calling user's effective group-level permissions, keyed by group id. Plain strings for the same reason as appPermissions.
+/// * [groupReceiptRequirements] - What the calling user must supply on each group's receipts, keyed by group id, resolved from their group role with the group's waivers applied. Only groups where something is required are present; an absent group requires nothing. Always an object, never null.
 /// * [groupCategories] - The categories the calling user may use in each group, keyed by group id. Filtered to the user's group-role grants (the full pool when unrestricted). Non-admins receive categories only through this map.
 /// * [groupTags] - The tags the calling user may use in each group, keyed by group id. Filtered to the user's group-role grants (the full pool when unrestricted). Non-admins receive tags only through this map.
 @BuiltValue()
@@ -106,13 +107,17 @@ abstract class AppData implements Built<AppData, AppDataBuilder> {
   @BuiltValueField(wireName: r'icons')
   BuiltList<Icon> get icons;
 
-  /// The calling user's effective app-level permissions.
+  /// The calling user's effective app-level permissions. Deliberately typed as plain strings rather than the Permission enum: this is server-resolved data, not a contract. A granted entry may be a wildcard (e.g. \"app.*\"), which is not an enum member, and a client built before a newly added permission must still be able to parse the payload. Clients match these with the wildcard matcher.
   @BuiltValueField(wireName: r'appPermissions')
-  BuiltList<Permission> get appPermissions;
+  BuiltList<String> get appPermissions;
 
-  /// The calling user's effective group-level permissions, keyed by group id.
+  /// The calling user's effective group-level permissions, keyed by group id. Plain strings for the same reason as appPermissions.
   @BuiltValueField(wireName: r'groupPermissions')
-  BuiltMap<String, BuiltList<Permission>> get groupPermissions;
+  BuiltMap<String, BuiltList<String>> get groupPermissions;
+
+  /// What the calling user must supply on each group's receipts, keyed by group id, resolved from their group role with the group's waivers applied. Only groups where something is required are present; an absent group requires nothing. Always an object, never null.
+  @BuiltValueField(wireName: r'groupReceiptRequirements')
+  BuiltMap<String, ReceiptRequirements>? get groupReceiptRequirements;
 
   /// The categories the calling user may use in each group, keyed by group id. Filtered to the user's group-role grants (the full pool when unrestricted). Non-admins receive categories only through this map.
   @BuiltValueField(wireName: r'groupCategories')
@@ -240,13 +245,20 @@ class _$AppDataSerializer implements PrimitiveSerializer<AppData> {
     yield r'appPermissions';
     yield serializers.serialize(
       object.appPermissions,
-      specifiedType: const FullType(BuiltList, [FullType(Permission)]),
+      specifiedType: const FullType(BuiltList, [FullType(String)]),
     );
     yield r'groupPermissions';
     yield serializers.serialize(
       object.groupPermissions,
-      specifiedType: const FullType(BuiltMap, [FullType(String), FullType(BuiltList, [FullType(Permission)])]),
+      specifiedType: const FullType(BuiltMap, [FullType(String), FullType(BuiltList, [FullType(String)])]),
     );
+    if (object.groupReceiptRequirements != null) {
+      yield r'groupReceiptRequirements';
+      yield serializers.serialize(
+        object.groupReceiptRequirements,
+        specifiedType: const FullType(BuiltMap, [FullType(String), FullType(ReceiptRequirements)]),
+      );
+    }
     if (object.groupCategories != null) {
       yield r'groupCategories';
       yield serializers.serialize(
@@ -399,16 +411,23 @@ class _$AppDataSerializer implements PrimitiveSerializer<AppData> {
         case r'appPermissions':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(BuiltList, [FullType(Permission)]),
-          ) as BuiltList<Permission>;
+            specifiedType: const FullType(BuiltList, [FullType(String)]),
+          ) as BuiltList<String>;
           result.appPermissions.replace(valueDes);
           break;
         case r'groupPermissions':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(BuiltMap, [FullType(String), FullType(BuiltList, [FullType(Permission)])]),
-          ) as BuiltMap<String, BuiltList<Permission>>;
+            specifiedType: const FullType(BuiltMap, [FullType(String), FullType(BuiltList, [FullType(String)])]),
+          ) as BuiltMap<String, BuiltList<String>>;
           result.groupPermissions.replace(valueDes);
+          break;
+        case r'groupReceiptRequirements':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltMap, [FullType(String), FullType(ReceiptRequirements)]),
+          ) as BuiltMap<String, ReceiptRequirements>;
+          result.groupReceiptRequirements.replace(valueDes);
           break;
         case r'groupCategories':
           final valueDes = serializers.deserialize(

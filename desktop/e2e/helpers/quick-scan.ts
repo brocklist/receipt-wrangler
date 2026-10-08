@@ -1,3 +1,4 @@
+import { openReceiptsOverflowMenu } from './receipts-table';
 import { expect, type Locator, type Page, type Route } from '@playwright/test';
 import type { CreateRecognitionTaskCommand, RecognitionTask } from '../../src/open-api';
 
@@ -80,6 +81,10 @@ export interface QuickScanConfig {
   quickScanCategoriesRequired?: boolean;
   quickScanTagsEnabled?: boolean;
   quickScanTagsRequired?: boolean;
+  quickScanCommentEnabled?: boolean;
+  quickScanCommentRequired?: boolean;
+  /** Hides comments group-wide, which also hides the quick-scan comment field. */
+  hideComments?: boolean;
 }
 
 interface IdName {
@@ -98,6 +103,12 @@ export interface QuickScanAppData {
   groupCategories?: Record<number, IdName[]>;
   /** Per-group tag catalog the pickers read (keyed by group id). */
   groupTags?: Record<number, IdName[]>;
+  /**
+   * Per-group effective permissions (keyed by group id). Use to withhold a
+   * permission the real caller holds — e.g. `group.comments.create`, which gates
+   * the quick-scan comment field — without provisioning a custom role.
+   */
+  groupPermissions?: Record<number, string[]>;
 }
 
 /**
@@ -134,6 +145,9 @@ export async function injectQuickScanAppData(
     if (data.groupTags) {
       body.groupTags = { ...body.groupTags, ...data.groupTags };
     }
+    if (data.groupPermissions) {
+      body.groupPermissions = { ...body.groupPermissions, ...data.groupPermissions };
+    }
 
     await route.fulfill({ response, json: body });
   });
@@ -151,7 +165,9 @@ export async function injectQuickScanAppData(
  */
 export async function openQuickScanDialog(page: Page, groupId: number): Promise<Locator> {
   await page.goto(`/receipts/group/${groupId}`);
-  await page.getByTestId('receipts-quick-scan').getByRole('button').click();
+  await openReceiptsOverflowMenu(page);
+  // A mat-menu-item is the button itself, so there is no inner button to reach.
+  await page.getByTestId('receipts-quick-scan').click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   return dialog;

@@ -9,7 +9,7 @@ import 'env.dart';
 /// Admin-API fixtures for the permission-gating e2e specs.
 ///
 /// The permission gates (`receipt_edit_popup_menu.dart`, `receipt_list_item.dart`,
-/// `group_activity_list_item.dart`, `show_add_menu.dart`) read the caller's
+/// `group_activity_list_item.dart`, `receipt_entry_availability.dart`) read the caller's
 /// *group-scoped* permissions, so to exercise them we need a logged-in user whose
 /// group membership/role we control.
 ///
@@ -28,6 +28,7 @@ class PermFixture {
     required this.username,
     required this.password,
     required this.userId,
+    required this.displayName,
     this.groupId,
     this.groupName,
     this.receiptId,
@@ -39,6 +40,12 @@ class PermFixture {
   final String username;
   final String password;
   final int userId;
+
+  /// The name the user dropdowns (paid-by, charged-to) render for this user.
+  /// Carried here rather than derived in a spec because the fixture is the only
+  /// thing that knows it — the `users.dart` lookup helpers only cover the two
+  /// fixed `E2E_*` accounts.
+  final String displayName;
 
   /// The fixture group the user belongs to (null when provisioned with no group,
   /// e.g. the "user in no group" add-menu negative case).
@@ -174,6 +181,8 @@ Future<int> createRole({
   String description = 'e2e custom role',
   bool includeOwnPaidReceipts = false,
   List<int> paidByUserGrants = const [],
+  bool requireReceiptComment = false,
+  bool requireReceiptImage = false,
 }) async {
   final body = <String, dynamic>{
     'name': name,
@@ -188,6 +197,13 @@ Future<int> createRole({
   if (includeOwnPaidReceipts || paidByUserGrants.isNotEmpty) {
     body['includeOwnPaidReceipts'] = includeOwnPaidReceipts;
     body['paidByUserGrants'] = paidByUserGrants;
+  }
+  // Role-required receipt fields (group scope only; the server rejects them on
+  // an APP role). Only sent when set, so every existing caller's body is
+  // unchanged.
+  if (requireReceiptComment || requireReceiptImage) {
+    body['requireReceiptComment'] = requireReceiptComment;
+    body['requireReceiptImage'] = requireReceiptImage;
   }
   final res = await http
       .post(
@@ -280,13 +296,31 @@ Future<void> deleteGroup(int groupId, {required String jwt}) async {
   }
 }
 
+/// A reference to an existing category or tag, for [createReceipt].
+///
+/// Both fields are carried because `POST /receipt/` takes an
+/// `UpsertCategoryCommand` / `UpsertTagCommand`, whose validator requires a
+/// non-empty `name` even when an `id` identifies an existing row.
+typedef LabelRef = ({int id, String name});
+
 /// Creates a receipt in [groupId] paid by [paidByUserId]. Returns its id.
+///
+/// [date] and [status] default to the values this helper used to hardcode, and
+/// [categories] / [tags] are omitted from the body entirely when empty, so the
+/// request every pre-existing caller sends is unchanged. They are parameters
+/// because the filter specs need receipts that differ along the axes being
+/// filtered on -- a fixed date and a fixed status cannot exercise a date range
+/// or a status filter.
 Future<int> createReceipt({
   required int groupId,
   required int paidByUserId,
   required String jwt,
   required String name,
   String amount = '12.34',
+  String date = '2026-06-11T00:00:00Z',
+  String status = 'OPEN',
+  List<LabelRef> categories = const [],
+  List<LabelRef> tags = const [],
 }) async {
   final res = await http
       .post(
@@ -295,10 +329,16 @@ Future<int> createReceipt({
         body: jsonEncode({
           'name': name,
           'amount': amount,
-          'date': '2026-06-11T00:00:00Z',
+          'date': date,
           'groupId': groupId,
           'paidByUserId': paidByUserId,
-          'status': 'OPEN',
+          'status': status,
+          if (categories.isNotEmpty)
+            'categories': [
+              for (final c in categories) {'id': c.id, 'name': c.name}
+            ],
+          if (tags.isNotEmpty)
+            'tags': [for (final t in tags) {'id': t.id, 'name': t.name}],
         }),
       )
       .timeout(const Duration(seconds: 10));
@@ -523,11 +563,28 @@ Future<List<Map<String, dynamic>>> _adminGroups(String jwt) async {
 }
 
 /// Builds an `UpdateGroupReceiptSettingsCommand` from a settings map, applying
-/// [overrides]. Only the hide* + quick-scan enabled/required flags are sent -- the
+/// [overrides]. Only the hide* + quick-scan/ingest boolean flags are sent -- the
 /// default enum fields (`quickScanDefaultPaidByType` / `...Status`) are omitted
 /// because the backend keeps them and rejects an empty enum, so we never echo one
 /// back. (This is why persisted configs keep paid-by/status *required*: making
 /// them optional would need a persisted default the backend enforces.)
+///
+/// `defaultCustomFieldIds` is deliberately NOT in the list either: it is a list,
+/// not a bool, and the command treats an omitted key as "leave unchanged", which
+/// is exactly what every caller that isn't [setGroupDefaultCustomFields] wants.
+/// The `?? false` fallback would otherwise send `false` for it.
+///
+/// The same rule covers all four RECEIPT SUMMARY keys -- `receiptSummaryEnabled`,
+/// `receiptSummaryPosition`, `receiptSummaryCustomFieldIds` and
+/// `receiptSummaryStatuses`. Every one of them is a POINTER on the Go command, so
+/// omitting them leaves the stored value alone; `receiptSummaryEnabled` is a
+/// pointer specifically to stop this bug shape. **Do not add them to the loop**:
+/// `receiptSummaryPosition: false` fails the enum decode outright.
+///
+/// The consequence is that a teardown replaying this map does NOT restore them --
+/// nil means "leave unchanged". [setGroupSummaryConfig] therefore captures the
+/// originals and passes them back EXPLICITLY, the way
+/// [setGroupDefaultCustomFields] does for its ids.
 Map<String, dynamic> _settingsToCommand(
   Map<String, dynamic> s, {
   Map<String, dynamic> overrides = const {},
@@ -541,6 +598,8 @@ Map<String, dynamic> _settingsToCommand(
         'quickScanStatusEnabled', 'quickScanStatusRequired',
         'quickScanCategoriesEnabled', 'quickScanCategoriesRequired',
         'quickScanTagsEnabled', 'quickScanTagsRequired',
+        'quickScanCommentEnabled', 'quickScanCommentRequired',
+        'applyDefaultCustomFieldsOnIngest',
       ])
         k: s[k] ?? false,
       ...overrides,
@@ -581,6 +640,107 @@ Future<void> setGroupQuickScanConfig({
   addTearDown(() async {
     final j = await apiLogin();
     await _putGroupReceiptSettings(groupId, j, _settingsToCommand(original));
+  });
+}
+
+/// Persists [customFieldIds] as [groupId]'s default custom fields, restoring the
+/// group's original set on teardown.
+///
+/// Like [setGroupQuickScanConfig] this goes through the real API rather than
+/// mutating `GroupModel`: the client learns the set from AppData at login and the
+/// backend enforces the submitted custom field set on save
+/// (`enforceReceiptCustomFieldSelection`), so client and server have to agree, as
+/// they do in production. Pass `[]` to clear the group's set.
+Future<void> setGroupDefaultCustomFields({
+  required int groupId,
+  required String jwt,
+  required List<int> customFieldIds,
+}) async {
+  final groups = await _adminGroups(jwt);
+  final original = ((groups.firstWhere((x) => x['id'] == groupId,
+              orElse: () => throw StateError('group $groupId not found'))[
+          'groupReceiptSettings']) as Map)
+      .cast<String, dynamic>();
+  // `GET /group/` hydrates this (handlers/groups.go calls
+  // LoadDefaultCustomFieldIdsForGroups), and the backend always serializes an
+  // array rather than null -- the `?? const []` is belt and braces so a teardown
+  // can never throw on a group that has none.
+  final originalIds =
+      ((original['defaultCustomFieldIds'] as List?) ?? const []).cast<int>();
+
+  await _putGroupReceiptSettings(
+      groupId,
+      jwt,
+      _settingsToCommand(original,
+          overrides: {'defaultCustomFieldIds': customFieldIds}));
+  addTearDown(() async {
+    final j = await apiLogin();
+    await _putGroupReceiptSettings(
+        groupId,
+        j,
+        _settingsToCommand(original,
+            overrides: {'defaultCustomFieldIds': originalIds}));
+  });
+}
+
+/// Persists [groupId]'s receipt summary configuration, restoring the original on
+/// teardown.
+///
+/// Like the two fixtures above this goes through the real API rather than mutating
+/// `GroupModel`: the client decides whether to REQUEST the summary from the settings it
+/// learned via AppData at login, and the server decides everything it renders, so the
+/// two have to agree as they do in production.
+///
+/// The teardown restores all four keys explicitly. Replaying [_settingsToCommand] alone
+/// would omit them, and an omitted key means "leave unchanged" -- so a spec that turned
+/// the summary on for a shared group would leave it on for every later spec and every
+/// later run.
+Future<void> setGroupSummaryConfig({
+  required int groupId,
+  required String jwt,
+  required bool enabled,
+  String? position,
+  List<String>? statuses,
+  List<int>? customFieldIds,
+}) async {
+  final groups = await _adminGroups(jwt);
+  final original = ((groups.firstWhere((x) => x['id'] == groupId,
+              orElse: () => throw StateError('group $groupId not found'))[
+          'groupReceiptSettings']) as Map)
+      .cast<String, dynamic>();
+
+  // `?? const []` / `?? 'BOTTOM'` are belt and braces: the backend always serializes
+  // arrays rather than null and normalizes an empty position away, so a teardown can
+  // never throw on a group that has nothing configured.
+  final originalEnabled = original['receiptSummaryEnabled'] == true;
+  final originalPosition =
+      (original['receiptSummaryPosition'] as String?) ?? 'BOTTOM';
+  final originalStatuses =
+      ((original['receiptSummaryStatuses'] as List?) ?? const []).cast<String>();
+  final originalFieldIds =
+      ((original['receiptSummaryCustomFieldIds'] as List?) ?? const []).cast<int>();
+
+  await _putGroupReceiptSettings(
+      groupId,
+      jwt,
+      _settingsToCommand(original, overrides: {
+        'receiptSummaryEnabled': enabled,
+        if (position != null) 'receiptSummaryPosition': position,
+        if (statuses != null) 'receiptSummaryStatuses': statuses,
+        if (customFieldIds != null) 'receiptSummaryCustomFieldIds': customFieldIds,
+      }));
+
+  addTearDown(() async {
+    final j = await apiLogin();
+    await _putGroupReceiptSettings(
+        groupId,
+        j,
+        _settingsToCommand(original, overrides: {
+          'receiptSummaryEnabled': originalEnabled,
+          'receiptSummaryPosition': originalPosition,
+          'receiptSummaryStatuses': originalStatuses,
+          'receiptSummaryCustomFieldIds': originalFieldIds,
+        }));
   });
 }
 
@@ -650,11 +810,13 @@ Future<PermFixture> provisionPermUser({
   final suffix = _unique();
   final username = 'perm-$suffix';
 
+  final displayName = 'Perm $suffix';
+
   final adminId = await userIdByUsername(E2eEnv.adminUsername, jwt: jwt);
   final userId = await createUser(
     username: username,
     password: _password,
-    displayName: 'Perm $suffix',
+    displayName: displayName,
     jwt: jwt,
     appRoleId: appRoleId,
   );
@@ -696,6 +858,7 @@ Future<PermFixture> provisionPermUser({
     username: username,
     password: _password,
     userId: userId,
+    displayName: displayName,
     groupId: groupId,
     groupName: groupName,
     receiptId: receiptId,
@@ -792,6 +955,34 @@ Future<PermFixture> provisionGroupMemberWithoutPermission(
   return provisionPermUser(groupRoleId: roleId, withReceipt: withReceipt);
 }
 
+/// Provisions a user in a fixture group whose GROUP role is a copy of "Legacy
+/// Editor" (create, update and both comment permissions) that additionally
+/// requires a comment ([comment]) and/or an image ([image]) on the group's
+/// receipts. The admin that owns the group keeps Legacy Owner, which requires
+/// nothing, so admin-API seeding (e.g. [createReceipt]) is unaffected.
+///
+/// Same LIFO teardown ordering as [provisionGroupMemberWithoutPermission]: the
+/// role-delete is registered first so it runs after the group and user are gone.
+Future<PermFixture> provisionMemberWithReceiptRequirements({
+  bool comment = false,
+  bool image = false,
+  bool withReceipt = false,
+}) async {
+  final jwt = await apiLogin(); // admin
+  final roleId = await createRole(
+    name: 'e2e-req-${_unique()}',
+    scope: 'GROUP',
+    permissions: await rolePermissionsByName('Legacy Editor', 'GROUP', jwt: jwt),
+    jwt: jwt,
+    requireReceiptComment: comment,
+    requireReceiptImage: image,
+  );
+  addTearDown(
+      () async => deleteRole(roleId, scope: 'GROUP', jwt: await apiLogin()));
+
+  return provisionPermUser(groupRoleId: roleId, withReceipt: withReceipt);
+}
+
 /// A [PermFixture] plus the two receipts seeded for a paid-by-visibility spec:
 /// [ownReceiptName] is paid by the member (visible to them) and
 /// [hiddenReceiptName] is paid by the admin (filtered out by the role's
@@ -863,5 +1054,51 @@ Future<PaidByFixture> provisionPaidByOwnMember() async {
     ownReceiptName: ownReceiptName,
     hiddenReceiptId: hiddenReceiptId,
     hiddenReceiptName: hiddenReceiptName,
+  );
+}
+
+/// A [PermFixture] plus a **second** fixture group the same user belongs to,
+/// with the same group role.
+///
+/// [provisionPermUser] creates exactly one group, and the filter's
+/// group-change behaviour needs two *real* ones the user can switch between on
+/// `/groups`. Neither of the groups a single-group user already has will do: the
+/// synthetic "All" group is a different code path (`isAllGroupId`), and the
+/// personal "My Receipts" group's id is not something a fixture hands back.
+class TwoGroupFixture {
+  TwoGroupFixture({
+    required this.fixture,
+    required this.secondGroupId,
+    required this.secondGroupName,
+  });
+
+  final PermFixture fixture;
+  final int secondGroupId;
+  final String secondGroupName;
+}
+
+/// Provisions a user belonging to two fixture groups with the same role.
+Future<TwoGroupFixture> provisionPermUserWithTwoGroups({
+  String roleName = 'Legacy Editor',
+}) async {
+  final fixture = await provisionPermUser(roleName: roleName);
+
+  final jwt = await apiLogin();
+  final name = 'e2e-perm2-${_unique()}';
+  final groupId = await createGroupWithMember(
+    name: name,
+    memberUserId: fixture.userId,
+    groupRoleId: await groupRoleIdByName(roleName, jwt: jwt),
+    jwt: jwt,
+  );
+  // Registered AFTER provisionPermUser's own teardowns, so LIFO runs it FIRST
+  // -- this group goes before the user that belongs to it, matching the
+  // ordering rule documented on provisionUserWithoutAppPermission.
+  addTearDown(() async => deleteGroup(groupId, jwt: await apiLogin()));
+
+  return TwoGroupFixture(
+    fixture: fixture,
+    secondGroupId: groupId,
+    secondGroupName: name,
   );
 }

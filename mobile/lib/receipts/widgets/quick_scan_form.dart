@@ -6,13 +6,27 @@ import 'package:provider/provider.dart';
 import 'package:receipt_wrangler_mobile/constants/spacing.dart';
 import 'package:receipt_wrangler_mobile/enums/form_state.dart';
 import 'package:receipt_wrangler_mobile/models/group_model.dart';
+import 'package:receipt_wrangler_mobile/models/permissions_model.dart';
 import 'package:receipt_wrangler_mobile/shared/classes/quick_scan_image.dart';
+import 'package:receipt_wrangler_mobile/shared/functions/permissions.dart';
 import 'package:receipt_wrangler_mobile/shared/functions/quick_scan_field_config.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/category_select_field.dart';
 import 'package:receipt_wrangler_mobile/shared/widgets/tag_select_field.dart';
 import 'package:receipt_wrangler_mobile/utils/forms.dart';
 
 import '../../models/user_preferences_model.dart';
+
+/// The per-image values the quick-scan form reports on every change. A record
+/// rather than positional arguments: the list already opened with two `int?`s and
+/// is only growing, so naming each value keeps callers from transposing them.
+typedef QuickScanFormValues = ({
+  int? groupId,
+  int? paidByUserId,
+  api.ReceiptStatus? status,
+  List<api.Category> categories,
+  List<api.Tag> tags,
+  String? comment,
+});
 
 class QuickScanForm extends StatefulWidget {
   const QuickScanForm(
@@ -26,9 +40,7 @@ class QuickScanForm extends StatefulWidget {
   final GlobalKey<FormBuilderState> formKey;
   final QuickScanImage image;
   final int index;
-  final void Function(
-          int?, int?, api.ReceiptStatus?, List<api.Category>, List<api.Tag>)
-      onFormChangeCallback;
+  final void Function(QuickScanFormValues values) onFormChangeCallback;
   final bool enabled;
 
   @override
@@ -48,14 +60,40 @@ class _QuickScanForm extends State<QuickScanForm> {
 
   void onValueChange() {
     widget.formKey.currentState!.save();
-    var formValue = widget.formKey.currentState!.value;
-    widget.onFormChangeCallback(
-      formValue["groupId"],
-      formValue["paidByUserId"],
-      formValue["status"],
-      (formValue["categories"] as List?)?.cast<api.Category>() ?? const [],
-      (formValue["tags"] as List?)?.cast<api.Tag>() ?? const [],
-    );
+    final formValue = widget.formKey.currentState!.value;
+
+    // A field the config hides is never BUILT (Visibility defaults to
+    // maintainState: false), so it never registers with FormBuilder and its key
+    // is absent from `value`. FormBuilder runs with the default
+    // clearValueOnUnregister: false, so a key that HAS been registered survives
+    // the field being hidden later - an absent key therefore means "never
+    // shown", not "cleared", and the image's own value is the right answer.
+    //
+    // Reporting null for an absent key would erase the user's quickScanDefault*
+    // prefill on the very first group selection, because the consumer
+    // (quick_scan.dart) writes every record member onto the image
+    // unconditionally and this runs BEFORE the setState that reveals the fields.
+    // A field that IS mounted always reports its own value, so the explicit
+    // clears in the group dropdown's onChanged still take effect.
+    widget.onFormChangeCallback((
+      // Always built, so no fallback is needed.
+      groupId: formValue["groupId"],
+      paidByUserId: formValue.containsKey("paidByUserId")
+          ? formValue["paidByUserId"] as int?
+          : widget.image.paidByUserId,
+      status: formValue.containsKey("status")
+          ? formValue["status"] as api.ReceiptStatus?
+          : widget.image.status,
+      categories: formValue.containsKey("categories")
+          ? (formValue["categories"] as List?)?.cast<api.Category>() ?? const []
+          : widget.image.categories,
+      tags: formValue.containsKey("tags")
+          ? (formValue["tags"] as List?)?.cast<api.Tag>() ?? const []
+          : widget.image.tags,
+      comment: formValue.containsKey("comment")
+          ? formValue["comment"] as String?
+          : widget.image.comment,
+    ));
   }
 
   // TODO: refactor to a common Widget to use in receipt form
@@ -86,6 +124,18 @@ class _QuickScanForm extends State<QuickScanForm> {
         onValueChange();
         setState(() {
           groupId = value as int;
+        });
+        // The new group's field set mounts on the NEXT frame, each field seeding
+        // itself from the image. Report again once it exists, so the image
+        // matches what the user can actually see: a prefilled paid-by who is not
+        // a member of the group just picked seeds the dropdown BLANK
+        // (`valueExists` in _buildUserDropDown), and without this the image would
+        // keep the invisible id and _submitQuickScan would send it. Safe to
+        // re-enter: onValueChange does not setState.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            onValueChange();
+          }
         });
       },
     );
@@ -175,23 +225,51 @@ class _QuickScanForm extends State<QuickScanForm> {
     );
   }
 
+  Widget _buildCommentField(bool required) {
+    return FormBuilderTextField(
+      name: "comment",
+      decoration: const InputDecoration(labelText: "Comment"),
+      // A receipt note rather than a one-liner; the length cap matches the
+      // backend's models.MaxCommentLength, which rejects anything longer.
+      maxLines: 3,
+      maxLength: 500,
+      initialValue: widget.image.comment,
+      validator: required ? FormBuilderValidators.required() : null,
+      enabled: widget.enabled,
+      onChanged: (value) {
+        onValueChange();
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // Field visibility/requirement follows the selected group's quick-scan
     // config. When paid-by/status is not shown+required the server backfills a
-    // configured default, so the field can be omitted here. Null (no group yet)
-    // falls back to the backend defaults: paid-by/status shown, categories/tags
-    // hidden.
+    // configured default, so the field can be omitted here. With no group picked
+    // yet only the Group dropdown renders - there is no config to honour, and
+    // guessing one means flipping the field set the moment a group is chosen.
     final settings = Provider.of<GroupModel>(context, listen: false)
         .getGroupReceiptSettings(groupId);
+    final permissionsModel =
+        Provider.of<PermissionsModel>(context, listen: false);
 
-    final config = resolveQuickScanFieldConfig(settings);
+    final config = resolveQuickScanFieldConfig(
+      settings,
+      hasGroup: groupId > 0,
+      canCreateComments: canCommentCreate(permissionsModel, groupId),
+      commentRequiredByRole: permissionsModel
+          .receiptRequirements(groupId)
+          .commentRequired,
+    );
     final showPaidBy = config.showPaidBy;
     final requirePaidBy = config.requirePaidBy;
     final showStatus = config.showStatus;
     final requireStatus = config.requireStatus;
     final showCategories = config.showCategories;
     final showTags = config.showTags;
+    final showComment = config.showComment;
+    final requireComment = config.requireComment;
 
     return FormBuilder(
         key: widget.formKey,
@@ -225,6 +303,13 @@ class _QuickScanForm extends State<QuickScanForm> {
               child: Column(children: [
                 textFieldSpacing,
                 _buildTagField(),
+              ]),
+            ),
+            Visibility(
+              visible: showComment,
+              child: Column(children: [
+                textFieldSpacing,
+                _buildCommentField(requireComment),
               ]),
             ),
             submitButtonSpacing

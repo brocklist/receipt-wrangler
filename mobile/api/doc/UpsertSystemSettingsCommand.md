@@ -24,6 +24,11 @@ Name | Type | Description | Notes
 **taskQueueConfigurations** | [**BuiltList&lt;UpsertTaskQueueConfiguration&gt;**](UpsertTaskQueueConfiguration.md) |  | [optional] 
 **mcpEnabled** | **bool** | Whether the OAuth 2.1-protected MCP server is enabled | [optional] 
 **mcpPublicUrl** | **String** | Externally reachable origin used for MCP OAuth/metadata/redirect URLs and token audience | [optional] 
+**showLoginQr** | **bool** | Whether to show the mobile-setup QR code on the desktop login page | [optional] 
+**mobileServerUrl** | **String** | Server/API URL mobile clients connect to; encoded into the login QR's deep link | [optional] 
+**refreshTokenValidForHours** | **int** | How long a refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged. | [optional] 
+**mcpRefreshTokenValidForHours** | **int** | How long an MCP/OAuth connector refresh token stays valid, in hours. Accepted values are 1-720 (30 days), or 0 meaning unset, which falls back to the default of 24. Omit the key entirely to leave the currently configured value unchanged. | [optional] 
+**tempFileRetentionHours** | **int** | How long a temp file is kept once nothing can still act on it, in hours. Accepted values are 24-8760 (1 year), or 0 meaning unset, which falls back to the default of 720 (30 days). Omit the key entirely to leave the currently configured value unchanged. | [optional] 
 
 [[Back to Model list]](../README.md#documentation-for-models) [[Back to API list]](../README.md#documentation-for-api-endpoints) [[Back to README]](../README.md)
 
